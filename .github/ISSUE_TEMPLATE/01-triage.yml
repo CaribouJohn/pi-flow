@@ -1,0 +1,36 @@
+name: Triage — new issue
+description: A bug or enhancement that needs maintainer evaluation.
+title: "[triage] "
+labels: ["needs-triage"]
+body:
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - bug
+        - enhancement
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One paragraph. What is this?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context / reproduction
+      description: What were you trying to do? What happened? Links, logs, screenshots.
+  - type: textarea
+    id: depends
+    attributes:
+      label: Depends on
+      description: |
+        List issues this depends on, one per line, as `Depends on: #NNN`.
+        The flow extension reads these to compute `assignable`.
+      placeholder: |
+        Depends on: #12
+        Depends on: #34

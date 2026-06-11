@@ -1,0 +1,58 @@
+name: Acceptance — track back bookend
+description: The human accept-or-reject gate that lands a finished track on `main`.
+title: "[accept] "
+labels: ["needs-acceptance", "review:human"]
+body:
+  - type: input
+    id: track
+    attributes:
+      label: Parent track
+      description: The `tracking` parent this bookend closes out.
+      placeholder: "#5"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: "Accept the integrated `<feature>` and land the track on `main`."
+      value: "Accept the integrated <feature> and land the track on `main`."
+    validations:
+      required: true
+  - type: textarea
+    id: verify
+    attributes:
+      label: What to verify
+      description: |
+        End-to-end behaviour to exercise on the **track branch** before merging.
+        The verify gate has already been green on every slice; this is the
+        product/taste call only you can make.
+    validations:
+      required: true
+  - type: textarea
+    id: on_accept
+    attributes:
+      label: On accept
+      value: |
+        Open the track → `main` PR and merge.
+        Close this issue and the `tracking` parent.
+    validations:
+      required: true
+  - type: textarea
+    id: on_reject
+    attributes:
+      label: On reject
+      value: |
+        File a corrective issue on the track branch.
+        The track never reaches `main` unaccepted.
+  - type: textarea
+    id: depends
+    attributes:
+      label: Depends on (every slice in the track)
+      description: One `Depends on: #NNN` per slice.
+      placeholder: |
+        Depends on: #10
+        Depends on: #11
+        Depends on: #12
+    validations:
+      required: true

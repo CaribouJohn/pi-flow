@@ -1,0 +1,40 @@
+name: Tracking parent
+description: A container that tracks child slices toward a single deliverable. Never worked directly.
+title: "[track] "
+labels: ["tracking"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: One sentence — what does landing this track on `main` deliver?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope / shape
+      description: Bullet the headline pieces. Link to DESIGN.md sections or ADRs.
+    validations:
+      required: true
+  - type: textarea
+    id: slices
+    attributes:
+      label: Slices
+      description: |
+        The child issues that compose this track. Add them as `Tracked: #NNN` lines.
+        File the slices separately as `ready-for-agent` and a back-bookend as `needs-acceptance`.
+      placeholder: |
+        Tracked: #10  (tracer-bullet — extension loads + /flow status)
+        Tracked: #11  (restructure claude-skills/ → extension/skills/)
+        Tracked: #12  (flow_profile_read + flow_issues_query)
+        ...
+        Tracked: #99  (acceptance)
+  - type: input
+    id: track_branch
+    attributes:
+      label: Track branch
+      description: Branch this track lives on. Default `track/<short-name>`.
+      placeholder: track/skeleton-and-tools
+    validations:
+      required: true

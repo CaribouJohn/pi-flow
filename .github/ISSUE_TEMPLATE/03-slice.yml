@@ -1,0 +1,56 @@
+name: Slice — ready for agent
+description: A fully-specified, agent-executable unit of work inside a track.
+title: "[slice] "
+labels: ["ready-for-agent", "review:agent"]
+body:
+  - type: input
+    id: track
+    attributes:
+      label: Parent track
+      description: The `tracking` parent issue this slice belongs to.
+      placeholder: "#5"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: One sentence — what does this slice deliver, end-to-end?
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: Specification
+      description: |
+        Everything the agent needs to execute unattended.
+        File paths, function signatures, expected behaviours, edge cases.
+        If you find yourself writing "figure out" — this is not yet ready-for-agent.
+    validations:
+      required: true
+  - type: textarea
+    id: verify
+    attributes:
+      label: How to verify
+      description: The concrete checks the verify gate runs. Tests to add. Manual reproduction steps if any.
+    validations:
+      required: true
+  - type: textarea
+    id: depends
+    attributes:
+      label: Depends on
+      description: |
+        Slices that must merge to the track branch before this one is assignable.
+        One `Depends on: #NNN` per line. The extension's `flow_next_assignable` reads these.
+      placeholder: |
+        Depends on: #10
+  - type: dropdown
+    id: effort
+    attributes:
+      label: Effort
+      options:
+        - "effort:low — mechanical"
+        - "effort:medium — needs care"
+        - "effort:high — reasoning-heavy (consider re-slicing)"
+    validations:
+      required: true

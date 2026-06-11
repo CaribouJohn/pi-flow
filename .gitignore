@@ -1,0 +1,24 @@
+# Node / Bun
+node_modules/
+dist/
+build/
+*.log
+.bun/
+
+# pi
+.pi/sessions/
+.pi/cache/
+.pi/state/
+# (we DO commit .pi/flow.profile.md — that's the per-repo config)
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# Env
+.env
+.env.local
