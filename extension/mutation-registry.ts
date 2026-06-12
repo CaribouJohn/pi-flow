@@ -42,15 +42,58 @@ export type MutationRegistry = {
   prune(now?: number): void;
   /** Inspection helper for tests / status widgets. */
   size(): number;
+
+  // --- Issue-label mutation log (B-track poller suppression buffer) ---
+  /**
+   * Record that we just added/removed `label` on `issueNumber`. Additive
+   * log keyed by `{issue, label}` — multiple recent mutations on the same
+   * pair collapse (the query is boolean, not a count).
+   *
+   * The poller (B-track) consults this on every diff to skip label
+   * changes that originated from our own tools (`flow_set_state`,
+   * `flow_comment` future use, etc).
+   */
+  recordIssueMutation(issueNumber: number, label: string): void;
+  /**
+   * True iff we recorded a mutation on `{issueNumber, label}` within the
+   * last TTL window. Non-destructive — the poller calls this on every
+   * diff and a single mutation may legitimately suppress multiple ticks.
+   */
+  hasRecentMutation(
+    issueNumber: number,
+    label: string,
+    now?: number,
+  ): boolean;
+  /** Inspection helper for tests. */
+  issueMutationCount(): number;
+};
+
+type IssueLabelMutation = {
+  issueNumber: number;
+  label: string;
+  expiresAt: number;
 };
 
 export function createMutationRegistry(ttlMs = 10_000): MutationRegistry {
   const tokens = new Map<number, MutationToken>();
+  // key = `${issue}\u0000${label}` so distinct labels on the same issue
+  // live in independent slots. Value = expiresAt.
+  const issueLabels = new Map<string, IssueLabelMutation>();
 
   function pruneInternal(now: number) {
     for (const [num, t] of tokens) {
       if (t.expiresAt <= now) tokens.delete(num);
     }
+  }
+
+  function pruneIssueLabels(now: number) {
+    for (const [k, m] of issueLabels) {
+      if (m.expiresAt <= now) issueLabels.delete(k);
+    }
+  }
+
+  function labelKey(issueNumber: number, label: string) {
+    return `${issueNumber}\u0000${label}`;
   }
 
   return {
@@ -81,6 +124,24 @@ export function createMutationRegistry(ttlMs = 10_000): MutationRegistry {
     },
     size() {
       return tokens.size;
+    },
+
+    recordIssueMutation(issueNumber, label) {
+      const now = Date.now();
+      issueLabels.set(labelKey(issueNumber, label), {
+        issueNumber,
+        label,
+        expiresAt: now + ttlMs,
+      });
+    },
+    hasRecentMutation(issueNumber, label, now = Date.now()) {
+      pruneIssueLabels(now);
+      const m = issueLabels.get(labelKey(issueNumber, label));
+      return m !== undefined && m.expiresAt > now;
+    },
+    issueMutationCount() {
+      pruneIssueLabels(Date.now());
+      return issueLabels.size;
     },
   };
 }
