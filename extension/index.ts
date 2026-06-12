@@ -52,7 +52,6 @@ import {
 import { runSetupWizard, runSetupEdit, runSetupReset } from "./setup-wizard.ts";
 import {
   createAfkState,
-  makeStubTicker,
   renderStatusWidget,
   deriveCounts,
   replayAfkEntries,
@@ -60,8 +59,19 @@ import {
   AFK_ENTRY_TYPE,
   type AfkEntry,
   type AfkState,
+  type StubTicker,
 } from "./afk-state.ts";
 import type { Snapshot } from "./poller.ts";
+import { runOneTick, type AfkLoopDeps } from "./afk-loop.ts";
+import {
+  replayIterations,
+  AFK_ITERATION_ENTRY_TYPE,
+} from "./afk-iteration.ts";
+import {
+  buildRealDeps,
+  onTickOutcomeReset,
+  type BuildRealDepsOpts,
+} from "./afk-wiring.ts";
 import {
   createIssueAutocompleteProvider,
   createIssueCache,
@@ -1072,8 +1082,50 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
-  // ---------- B4: AFK state, stub loop, status widget ----------
-  const afkState: AfkState = createAfkState(makeStubTicker());
+  // ---------- B4/B8c: AFK state, real loop, status widget ----------
+  // B8b: per-issue reviewer-iteration count map. Replayed from
+  // session entries at session_start; mutated by bumpIteration /
+  // resetIteration via the B8b helpers.
+  const iterMap = new Map<number, number>();
+
+  // B8c: real AfkLoopDeps — built lazily at /flow-afk activation so the
+  // profile exists. null until the first /flow-afk invocation.
+  let realDeps: AfkLoopDeps | null = null;
+
+  // B8c: real ticker — calls runOneTick(realDeps) on each tick.
+  // Uses setInterval directly so cadence can be set from the profile
+  // at activation time. Implements the StubTicker interface so
+  // createAfkState accepts it without changes.
+  let _tickerHandle: ReturnType<typeof setInterval> | null = null;
+  let _tickerCadenceMs = 1000;
+  const realTicker: StubTicker = {
+    start() {
+      if (_tickerHandle !== null) return;
+      _tickerHandle = setInterval(() => {
+        if (!realDeps) return;
+        void runOneTick(realDeps).then(async (outcome) => {
+          // On merge or escalation, reset the iteration count so
+          // re-opened issues start fresh.
+          if (
+            (outcome.outcome === "merged" || outcome.outcome === "escalated") &&
+            outcome.issueNumber !== undefined
+          ) {
+            await onTickOutcomeReset(pi, iterMap, outcome.issueNumber);
+          }
+        });
+      }, _tickerCadenceMs);
+    },
+    stop() {
+      if (_tickerHandle === null) return;
+      clearInterval(_tickerHandle);
+      _tickerHandle = null;
+    },
+    isRunning() {
+      return _tickerHandle !== null;
+    },
+  };
+  const afkState: AfkState = createAfkState(realTicker);
+
   // Latest poll snapshot — wired by B9 once the poller subscribes here.
   let latestSnapshot: Snapshot | null = null;
   // B10: issue-number autocomplete cache. Module-scoped so B9 can
@@ -1114,12 +1166,33 @@ export default function (pi: ExtensionAPI): void {
   }
 
   pi.registerCommand("flow-afk", {
-    description: "Start AFK mode — orchestrator loop + poller heartbeat (B-track stub).",
+    description: "Start AFK mode — orchestrator loop + poller heartbeat.",
     handler: async (_args, ctx) => {
       if (afkState.isActive()) {
         ctx.ui.notify("AFK already active. /flow-afk-stop to halt.", "info");
         return;
       }
+      let profile;
+      try {
+        profile = readProfile(ctx.cwd);
+      } catch (err) {
+        ctx.ui.notify(
+          `Cannot start AFK: ${profileErrorHint(err)}`,
+          "error",
+        );
+        return;
+      }
+      // B8c: build real deps from the current profile.
+      const wiringOpts: BuildRealDepsOpts = {
+        pi,
+        gh,
+        mutationRegistry,
+        computeAssignable,
+        iterMap,
+        cwd: ctx.cwd,
+      };
+      realDeps = buildRealDeps(wiringOpts, profile);
+      _tickerCadenceMs = (profile.poll_cadence_seconds ?? 30) * 1000;
       afkState.setActive(true);
       afkState.ticker.start();
       widgetCtx = ctx as unknown as typeof widgetCtx;
@@ -1127,7 +1200,7 @@ export default function (pi: ExtensionAPI): void {
       const entry: AfkEntry = { afkActive: true, ts: Date.now() };
       pi.appendEntry(AFK_ENTRY_TYPE, entry);
       ctx.ui.notify(
-        "AFK mode on. Stub loop logging ticks; real loop body lands in B8.",
+        "AFK mode on. Real loop active (pick → implement → review → merge).",
         "info",
       );
     },
@@ -1154,7 +1227,9 @@ export default function (pi: ExtensionAPI): void {
   // the last entry was "on", surface the paused banner so the human can
   // explicitly resume with /flow-afk.
   pi.on("session_start", async (_event, ctx) => {
-    const latest = replayAfkEntries(ctx.sessionManager.getEntries() as never);
+    const entries = ctx.sessionManager.getEntries() as never[];
+    // B5: replay AFK toggle state.
+    const latest = replayAfkEntries(entries);
     const startup = deriveStartupWidget(latest);
     if (startup.afkPaused) {
       const lines = renderStatusWidget({
@@ -1170,6 +1245,9 @@ export default function (pi: ExtensionAPI): void {
       });
       ctx.ui.setWidget("flow", lines);
     }
+    // B8b: replay iteration counts into the module-scope iterMap.
+    const replayed = replayIterations(entries);
+    for (const [k, v] of replayed) iterMap.set(k, v);
   });
 
   // B10: `#NNN` issue-number autocomplete. One `gh issue list` on
