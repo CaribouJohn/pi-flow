@@ -37,6 +37,20 @@ import {
   createMutationRegistry,
   type MutationRegistry,
 } from "./mutation-registry.ts";
+import { createPreflightFromPi } from "./preflight.ts";
+import { createSetupLabels, defaultLoadCanonical } from "./setup-labels.ts";
+import {
+  createSetupTemplates,
+  defaultFs as defaultTemplatesFs,
+  defaultLoadBundled,
+} from "./setup-templates.ts";
+import {
+  createScaffoldProfile,
+  defaultLoadTemplateBody,
+  defaultScaffoldFs,
+} from "./scaffold-profile.ts";
+import { runSetupWizard, runSetupEdit, runSetupReset } from "./setup-wizard.ts";
+import { existsSync, rmSync } from "node:fs";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
   return issues.map(
@@ -84,9 +98,221 @@ function currentStateOnIssue(
 export default function (pi: ExtensionAPI): void {
   const gh = createGh(pi);
   const mutationRegistry: MutationRegistry = createMutationRegistry();
+  const preflight = createPreflightFromPi(pi);
   // mutationRegistry is closure-shared with future slices added to this
   // default-export (AFK loop, status widget). Do not export across module
   // boundaries unless that need actually arrives.
+
+  // ---------- Tool: setup_flow_preflight ----------
+  pi.registerTool({
+    name: "setup_flow_preflight",
+    label: "Setup flow preflight",
+    description:
+      "Deterministic check before `/flow setup` (or any other mutational setup step) runs: verifies `gh` is authenticated for github.com, and parses `owner/repo` from the `origin` git remote. Returns a structured result with `ok`, `ghAuthed`, `ghUser`, `owner`, `repo`, and a per-failure `errors` array (codes: `gh_not_authed`, `no_origin`, `unparseable_remote`). Read-only — never mutates.",
+    promptSnippet:
+      "Run preflight (gh auth + origin detection) before the setup wizard does anything.",
+    promptGuidelines: [
+      "Always call setup_flow_preflight as the first step of /flow setup. If ok=false, surface every error message verbatim and stop — do not attempt subsequent setup tools.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_id, _params, signal) {
+      const result = await preflight.run({ signal });
+      const lines: string[] = [];
+      lines.push(`preflight: ${result.ok ? "OK" : "FAIL"}`);
+      lines.push(
+        `  gh: ${result.ghAuthed ? `authed${result.ghUser ? ` as ${result.ghUser}` : ""}` : "not authed"}`,
+      );
+      if (result.owner && result.repo) {
+        lines.push(`  repo: ${result.owner}/${result.repo}`);
+      } else {
+        lines.push(`  repo: (not detected)`);
+      }
+      if (result.errors.length > 0) {
+        lines.push(`  errors:`);
+        for (const e of result.errors) {
+          lines.push(`    [${e.code}] ${e.message}`);
+        }
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  // ---------- Tool: setup_flow_apply_labels ----------
+  pi.registerTool({
+    name: "setup_flow_apply_labels",
+    label: "Setup flow apply labels",
+    description:
+      "Idempotent label bootstrap. Reads the canonical label vocabulary from `extension/skills/setup-flow/labels.md` and `gh label create`s anything missing in the current repo. Never edits or deletes existing labels — colour/description drift is reported in `details.drift` but not auto-corrected. `dryRun: true` lists what would be created without calling `gh`.",
+    promptSnippet:
+      "Apply the canonical pi-flow label set to this repo, creating only what's missing.",
+    promptGuidelines: [
+      "Run setup_flow_apply_labels after preflight succeeds. Re-running is safe: it reports already-present labels rather than recreating them. Surface any `drift` entries to the user verbatim — do not attempt to fix them.",
+    ],
+    parameters: Type.Object({
+      dryRun: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, list what would be created in `skippedDueToDryRun` without calling `gh label create`.",
+        }),
+      ),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const setupLabels = createSetupLabels({
+        gh,
+        loadCanonical: defaultLoadCanonical(ctx.cwd),
+      });
+      const result = await setupLabels.apply({
+        dryRun: params.dryRun ?? false,
+        signal,
+      });
+      const lines: string[] = [];
+      lines.push(
+        `labels: ${result.created.length} created, ${result.alreadyPresent.length} already present` +
+          (result.skippedDueToDryRun.length > 0
+            ? `, ${result.skippedDueToDryRun.length} would-create (dry run)`
+            : ""),
+      );
+      if (result.created.length > 0) {
+        lines.push(`  created: ${result.created.join(", ")}`);
+      }
+      if (result.skippedDueToDryRun.length > 0) {
+        lines.push(`  would create: ${result.skippedDueToDryRun.join(", ")}`);
+      }
+      if (result.drift.length > 0) {
+        lines.push(`  drift (${result.drift.length}):`);
+        for (const d of result.drift) {
+          const colorMismatch =
+            d.actual.color !== d.canonical.color
+              ? `color ${d.actual.color}→${d.canonical.color}`
+              : "";
+          const descMismatch =
+            d.actual.description !== d.canonical.description
+              ? `desc "${d.actual.description}"→"${d.canonical.description}"`
+              : "";
+          lines.push(
+            `    ${d.name}: ${[colorMismatch, descMismatch].filter(Boolean).join("; ")}`,
+          );
+        }
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  // ---------- Tool: setup_flow_apply_issue_templates ----------
+  pi.registerTool({
+    name: "setup_flow_apply_issue_templates",
+    label: "Setup flow apply issue templates",
+    description:
+      "Copies the bundled GitHub issue-form YAMLs (triage / tracking / slice) from `extension/skills/setup-flow/issue-templates/` to `.github/ISSUE_TEMPLATE/` in the user's repo. Creates the directory if missing. Does not commit — files are left in the working tree for the user to inspect. By default, never overwrites an existing template; pass `overwrite: true` to force.",
+    promptSnippet:
+      "Drop the canonical pi-flow issue forms into .github/ISSUE_TEMPLATE/ (no commit).",
+    promptGuidelines: [
+      "Run setup_flow_apply_issue_templates after labels are applied. Files are uncommitted on purpose — tell the user to `git add .github/ISSUE_TEMPLATE` and commit when they're happy with the result. Use overwrite:true only when the user explicitly asks to restore canonical templates.",
+    ],
+    parameters: Type.Object({
+      overwrite: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, replace any existing .github/ISSUE_TEMPLATE/<name>.yml. Default false.",
+        }),
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const setupTemplates = createSetupTemplates({
+        loadBundled: defaultLoadBundled(ctx.cwd),
+        cwd: ctx.cwd,
+        fs: defaultTemplatesFs(),
+      });
+      const result = await setupTemplates.apply({
+        overwrite: params.overwrite ?? false,
+      });
+      const lines: string[] = [];
+      lines.push(
+        `issue templates: ${result.written.length} written, ${result.skippedExisting.length} skipped (already present)`,
+      );
+      if (result.written.length > 0) {
+        lines.push(`  written: ${result.written.join(", ")}`);
+      }
+      if (result.skippedExisting.length > 0) {
+        lines.push(`  skipped: ${result.skippedExisting.join(", ")}`);
+        lines.push(`  hint: re-run with overwrite:true to replace existing.`);
+      }
+      if (result.written.length > 0) {
+        lines.push(
+          `  note: files left uncommitted under .github/ISSUE_TEMPLATE/ — commit when ready.`,
+        );
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  // ---------- Tool: setup_flow_scaffold_profile ----------
+  pi.registerTool({
+    name: "setup_flow_scaffold_profile",
+    label: "Setup flow scaffold profile",
+    description:
+      "Writes `.pi/flow.profile.md` from an answers object (collected by the /flow setup wizard) and the canonical body template. Frontmatter is synthesised so the file round-trips through `flow_profile_read`. Refuses to overwrite an existing profile unless `overwrite:true` is passed (then `/flow setup --edit` and `--reset` use it). No commit — the file is left in the working tree.",
+    promptSnippet:
+      "Write .pi/flow.profile.md from the collected wizard answers (no commit).",
+    promptGuidelines: [
+      "Call setup_flow_scaffold_profile only after collecting the wizard answers. If it returns {written:false, reason:'exists'} during a fresh-repo run, surface that to the user and stop — the edit / reset paths belong to /flow setup --edit and --reset, not to this tool.",
+    ],
+    parameters: Type.Object({
+      answers: Type.Object({
+        owner: Type.String({ description: "GitHub owner (user or org)." }),
+        repo: Type.String({ description: "GitHub repo name." }),
+        defaultBranch: Type.String({
+          description: "Default branch (e.g. 'main').",
+        }),
+        trackBranchPrefix: Type.Optional(Type.String()),
+        verifyGate: Type.Optional(Type.String()),
+        inSituHarness: Type.Optional(Type.String()),
+        reviewerCommand: Type.Optional(Type.String()),
+        reviewerIterationCap: Type.Optional(Type.Number()),
+        pollCadenceSeconds: Type.Optional(Type.Number()),
+        aiDisclaimer: Type.Optional(Type.String()),
+        labelOverrides: Type.Optional(
+          Type.Record(Type.String(), Type.String(), {
+            description:
+              "Map of state-key (e.g. 'ready_for_agent') to non-default label string.",
+          }),
+        ),
+      }),
+      overwrite: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, replace an existing .pi/flow.profile.md. Default false.",
+        }),
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const scaffold = createScaffoldProfile({
+        cwd: ctx.cwd,
+        fs: defaultScaffoldFs(),
+        loadTemplateBody: defaultLoadTemplateBody(ctx.cwd),
+        loadCanonicalLabelsMd: defaultLoadCanonical(ctx.cwd),
+      });
+      const result = await scaffold.run(params.answers, {
+        overwrite: params.overwrite ?? false,
+      });
+      const text = result.written
+        ? `profile written: ${result.path} (uncommitted)`
+        : `profile already exists at ${result.path} — not overwritten (reason: ${result.reason}). Re-run with overwrite:true to replace.`;
+      return {
+        content: [{ type: "text", text }],
+        details: result,
+      };
+    },
+  });
 
   // ---------- Tool: flow_profile_read ----------
   pi.registerTool({
@@ -520,6 +746,104 @@ export default function (pi: ExtensionAPI): void {
         content: [{ type: "text", text: summary }],
         details: { count: files.length, files },
       };
+    },
+  });
+
+  // ---------- Command: /flow-setup ----------
+  pi.registerCommand("flow-setup", {
+    description:
+      "Interactive bootstrap (fresh repo) or edit / reset an existing profile. Args: '--edit' opens the settings list; '--reset' deletes the profile and re-runs the fresh wizard; bare invocation runs fresh on a clean repo and falls back to edit mode if a profile already exists.",
+    handler: async (args, ctx) => {
+      const trimmed = (args ?? "").trim();
+      const mode: "reset" | "edit" | "fresh" =
+        /^--?reset\b/.test(trimmed) ? "reset" :
+        /^--?edit\b/.test(trimmed) ? "edit" :
+        "fresh";
+
+      const profilePath = profilePathFor(ctx.cwd);
+      const preflight = createPreflightFromPi(pi);
+      const setupLabels = createSetupLabels({
+        gh,
+        loadCanonical: defaultLoadCanonical(ctx.cwd),
+      });
+      const setupTemplates = createSetupTemplates({
+        loadBundled: defaultLoadBundled(ctx.cwd),
+        cwd: ctx.cwd,
+        fs: defaultTemplatesFs(),
+      });
+      const scaffold = createScaffoldProfile({
+        cwd: ctx.cwd,
+        fs: defaultScaffoldFs(),
+        loadTemplateBody: defaultLoadTemplateBody(ctx.cwd),
+        loadCanonicalLabelsMd: defaultLoadCanonical(ctx.cwd),
+      });
+
+      try {
+        if (mode === "reset") {
+          await runSetupReset({
+            cwd: ctx.cwd,
+            ui: ctx.ui,
+            preflight,
+            labels: setupLabels,
+            templates: setupTemplates,
+            scaffold,
+            gh,
+            profileExists: () => existsSync(profilePath),
+            deleteProfile: () => {
+              try {
+                rmSync(profilePath, { force: true });
+                return !existsSync(profilePath);
+              } catch {
+                return false;
+              }
+            },
+            signal: ctx.signal,
+          });
+          return;
+        }
+
+        // Edit mode is requested explicitly, or implicitly when bare
+        // /flow-setup runs against a repo that already has a profile.
+        if (mode === "edit" || (mode === "fresh" && existsSync(profilePath))) {
+          if (mode === "fresh") {
+            ctx.ui.notify(
+              `Profile already present at ${profilePath} — entering edit mode. Use /flow-setup --reset to start over.`,
+              "info",
+            );
+          }
+          await runSetupEdit({
+            ui: ctx.ui,
+            scaffold,
+            loadProfile: () => {
+              try {
+                return readProfile(ctx.cwd);
+              } catch (err) {
+                ctx.ui.notify(
+                  `Could not read profile: ${profileErrorHint(err)}`,
+                  "error",
+                );
+                return null;
+              }
+            },
+          });
+          return;
+        }
+
+        await runSetupWizard({
+          cwd: ctx.cwd,
+          ui: ctx.ui,
+          preflight,
+          labels: setupLabels,
+          templates: setupTemplates,
+          scaffold,
+          gh,
+          profileExists: () => existsSync(profilePath),
+          signal: ctx.signal,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`/flow-setup failed: ${msg}`, "error");
+      }
     },
   });
 

@@ -1,0 +1,49 @@
+name: Triage — bug / feature / question
+description: File something that needs a maintainer's eyes before any work starts.
+title: "[triage] "
+labels: ["needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Anything filed here lands in `needs-triage`. A maintainer (or the triage
+        agent) will move it onward — to `needs-info`, `needs-grilling`,
+        `needs-slicing`, straight to `ready-for-agent`, or `wontfix`.
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: Pick the closest one. Maintainers can re-label later.
+      options:
+        - bug
+        - enhancement
+        - question
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences. What is this about?
+      placeholder: "`/flow next` returns issues whose deps aren't actually closed."
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: Detail
+      description: |
+        For a bug: reproduction steps, expected vs actual, environment.
+        For a feature: the problem you're solving, not the solution.
+        For a question: what you've already tried.
+      value: |
+        ### Steps / context
+
+        ### Expected
+
+        ### Actual
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Links, screenshots, related issues — optional.
