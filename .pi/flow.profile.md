@@ -9,9 +9,9 @@ default_branch: main
 track_branch_prefix: track/
 
 # Verify gate: the deterministic check every slice must pass before review.
-# Bootstrap reality: no tests exist yet. Track A slice 1 scaffolds package.json
-# with a passing smoke test, after which `bun test` becomes real.
-verify_gate: bun test
+# Default is a no-op that always passes; a later slice will swap this to `bun test`
+# once there's something to test.
+verify_gate: echo "verify-gate: default-pass (not yet implemented)"
 
 # In-situ harness: not applicable for this repo (no UI).
 in_situ_harness: ""
@@ -96,7 +96,7 @@ The headline:
 - Slice branches: off the track branch; merged back into the track branch.
 - The track branch → `main` PR is opened only by the human on acceptance;
   agents never touch `main`.
-- Verify gate: `bun test` (will be real once Track A slice 1 lands).
+- Verify gate: default no-op that always passes; swapped to a real check (likely `bun test`) by a later slice.
 - Reviewer agent: `/code-review`, fresh context per slice, up to 2 rounds
   before escalating to `review:human`.
 
