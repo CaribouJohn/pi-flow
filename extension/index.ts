@@ -39,6 +39,11 @@ import {
 } from "./mutation-registry.ts";
 import { createPreflightFromPi } from "./preflight.ts";
 import { createSetupLabels, defaultLoadCanonical } from "./setup-labels.ts";
+import {
+  createSetupTemplates,
+  defaultFs as defaultTemplatesFs,
+  defaultLoadBundled,
+} from "./setup-templates.ts";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
   return issues.map(
@@ -184,6 +189,57 @@ export default function (pi: ExtensionAPI): void {
             `    ${d.name}: ${[colorMismatch, descMismatch].filter(Boolean).join("; ")}`,
           );
         }
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  // ---------- Tool: setup_flow_apply_issue_templates ----------
+  pi.registerTool({
+    name: "setup_flow_apply_issue_templates",
+    label: "Setup flow apply issue templates",
+    description:
+      "Copies the bundled GitHub issue-form YAMLs (triage / tracking / slice) from `extension/skills/setup-flow/issue-templates/` to `.github/ISSUE_TEMPLATE/` in the user's repo. Creates the directory if missing. Does not commit — files are left in the working tree for the user to inspect. By default, never overwrites an existing template; pass `overwrite: true` to force.",
+    promptSnippet:
+      "Drop the canonical pi-flow issue forms into .github/ISSUE_TEMPLATE/ (no commit).",
+    promptGuidelines: [
+      "Run setup_flow_apply_issue_templates after labels are applied. Files are uncommitted on purpose — tell the user to `git add .github/ISSUE_TEMPLATE` and commit when they're happy with the result. Use overwrite:true only when the user explicitly asks to restore canonical templates.",
+    ],
+    parameters: Type.Object({
+      overwrite: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, replace any existing .github/ISSUE_TEMPLATE/<name>.yml. Default false.",
+        }),
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const setupTemplates = createSetupTemplates({
+        loadBundled: defaultLoadBundled(ctx.cwd),
+        cwd: ctx.cwd,
+        fs: defaultTemplatesFs(),
+      });
+      const result = await setupTemplates.apply({
+        overwrite: params.overwrite ?? false,
+      });
+      const lines: string[] = [];
+      lines.push(
+        `issue templates: ${result.written.length} written, ${result.skippedExisting.length} skipped (already present)`,
+      );
+      if (result.written.length > 0) {
+        lines.push(`  written: ${result.written.join(", ")}`);
+      }
+      if (result.skippedExisting.length > 0) {
+        lines.push(`  skipped: ${result.skippedExisting.join(", ")}`);
+        lines.push(`  hint: re-run with overwrite:true to replace existing.`);
+      }
+      if (result.written.length > 0) {
+        lines.push(
+          `  note: files left uncommitted under .github/ISSUE_TEMPLATE/ — commit when ready.`,
+        );
       }
       return {
         content: [{ type: "text", text: lines.join("\n") }],
