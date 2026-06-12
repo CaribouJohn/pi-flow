@@ -1,11 +1,9 @@
 # Canonical labels
 
-The labels `setup-flow` ensures exist. **Create only if missing; never edit or delete** an
-existing label. Command per row:
-
-```
-gh label create "<name>" --color <hex> --description "<description>"
-```
+The canonical label vocabulary for pi-flow. `setup_flow_apply_labels` parses this file
+and creates anything missing on the repo. **Create only if missing; never edit or delete
+an existing label** — drift is reported, not auto-corrected. Run via `/flow-setup` or
+the `setup_flow_apply_labels` tool directly.
 
 ## Category — exactly one per issue
 
