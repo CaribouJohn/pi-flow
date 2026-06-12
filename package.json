@@ -17,6 +17,10 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
   }
 }
