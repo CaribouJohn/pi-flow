@@ -1166,12 +1166,25 @@ export default function (pi: ExtensionAPI): void {
           tracking: profile.labels.state.tracking,
           needsAcceptance: profile.labels.state.needs_acceptance,
           reviewHuman: profile.labels.review.human,
+          readyForAgent: profile.labels.state.ready_for_agent,
         }
-      : { tracking: "tracking", needsAcceptance: "needs-acceptance", reviewHuman: "review:human" };
+      : { tracking: "tracking", needsAcceptance: "needs-acceptance", reviewHuman: "review:human", readyForAgent: "ready-for-agent" };
+    // Derive next-assignable directly from the snapshot (sync, no gh call).
+    const nextAssignable = (() => {
+      if (!latestSnapshot) return null;
+      for (const snap of latestSnapshot.issues.values()) {
+        if (snap.state === "OPEN" && snap.labels.includes(labels.readyForAgent)) {
+          const effortLabel = snap.labels.find((l) => l.startsWith("effort:")) ?? null;
+          const effort = effortLabel ? effortLabel.replace(/^effort:/, "") : null;
+          return { issue: snap.number, effort };
+        }
+      }
+      return null;
+    })();
     const counts = deriveCounts({
       snapshot: latestSnapshot,
       labels,
-      nextAssignable: null, // wired in B8
+      nextAssignable,
       idleMinutes: null,
     });
     const lines = renderStatusWidget({
