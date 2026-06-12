@@ -206,6 +206,33 @@ export function buildRealDeps(
     },
 
     async createBranch(branch: string): Promise<void> {
+      // Always start from the track branch so the slice is based off the
+      // right commit. After a previous slice finishes, the orchestrator
+      // is left on that slice branch; without this step the next slice
+      // would branch off the stale (possibly deleted-remote) slice.
+      const trackBranch = deps.trackBranch;
+      const fetchR = await pi.exec("git", ["fetch", "origin", trackBranch]);
+      // Non-zero fetch is non-fatal (offline / no remote changes — proceed
+      // with the local track branch if it exists).
+      if (fetchR.code !== 0) {
+        // Log but continue — local track branch may be up to date.
+      }
+      const checkoutR = await pi.exec("git", [
+        "checkout",
+        "-B",
+        trackBranch,
+        `origin/${trackBranch}`,
+      ]);
+      if (checkoutR.code !== 0) {
+        // Fall back to a plain checkout in case origin/<track> doesn't exist
+        // (e.g. first push hasn't happened yet).
+        const fallback = await pi.exec("git", ["checkout", trackBranch]);
+        if (fallback.code !== 0) {
+          throw new Error(
+            `createBranch: could not checkout track branch ${trackBranch} (exit ${fallback.code}): ${fallback.stderr.trim()}`,
+          );
+        }
+      }
       const r = await pi.exec("git", ["checkout", "-b", branch]);
       if (r.code !== 0) {
         throw new Error(
