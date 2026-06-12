@@ -93,6 +93,32 @@ export function profilePathFor(cwd: string): string {
  * message on any failure (file missing, frontmatter missing/invalid,
  * required field absent, label group malformed).
  */
+/**
+ * Look up the actual label string for a profile state-key (e.g. `ready_for_agent` → `"ready-for-agent"`).
+ * Returns null for unknown keys.
+ */
+export function labelForStateKey(
+  profile: Profile,
+  key: string,
+): string | null {
+  const map = profile.labels.state as unknown as Record<string, string>;
+  return map[key] ?? null;
+}
+
+/**
+ * Reverse: given a label currently on an issue, find which profile state-key it represents.
+ * Returns null if the label isn't a flow state label.
+ */
+export function stateKeyForLabel(
+  profile: Profile,
+  label: string,
+): string | null {
+  for (const [k, v] of Object.entries(profile.labels.state)) {
+    if (v === label) return k;
+  }
+  return null;
+}
+
 export function readProfile(cwd: string): Profile {
   const path = profilePathFor(cwd);
   let raw: string;

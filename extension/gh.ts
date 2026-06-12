@@ -42,12 +42,23 @@ export class GhError extends Error {
   }
 }
 
+export type EditIssueLabelsOpts = {
+  add?: string[];
+  remove?: string[];
+  signal?: AbortSignal;
+};
+
 export type Gh = {
   run(
     args: string[],
     opts?: { signal?: AbortSignal },
   ): Promise<{ stdout: string; stderr: string; code: number }>;
   listIssues(opts?: ListIssuesOpts): Promise<GhIssueRef[]>;
+  viewIssue(
+    number: number,
+    opts?: { signal?: AbortSignal },
+  ): Promise<GhIssueRef>;
+  editIssueLabels(number: number, opts: EditIssueLabelsOpts): Promise<void>;
 };
 
 type RawIssue = {
@@ -123,5 +134,69 @@ export function createGh(pi: ExtensionAPI): Gh {
     }));
   }
 
-  return { run, listIssues };
+  async function viewIssue(
+    number: number,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<GhIssueRef> {
+    const r = await run(
+      [
+        "issue",
+        "view",
+        String(number),
+        "--json",
+        "number,title,state,labels,body,updatedAt",
+      ],
+      opts,
+    );
+    if (r.code !== 0) {
+      throw new GhError(
+        `gh issue view ${number} exited ${r.code}: ${r.stderr.trim()}`,
+        r.code,
+        r.stderr,
+      );
+    }
+    let raw: RawIssue;
+    try {
+      raw = JSON.parse(r.stdout) as RawIssue;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new GhError(
+        `gh issue view ${number}: invalid JSON: ${msg}`,
+        0,
+        r.stdout.slice(0, 500),
+      );
+    }
+    return {
+      number: raw.number,
+      title: raw.title,
+      state: raw.state === "CLOSED" ? "CLOSED" : "OPEN",
+      labels: (raw.labels ?? []).map((l) => l.name),
+      body: raw.body ?? "",
+      updatedAt: raw.updatedAt,
+    };
+  }
+
+  async function editIssueLabels(
+    number: number,
+    opts: EditIssueLabelsOpts,
+  ): Promise<void> {
+    // Single `gh issue edit` call → single GitHub API mutation → atomic
+    // wrt label set (you don't see a half-applied state externally).
+    const add = opts.add ?? [];
+    const remove = opts.remove ?? [];
+    if (add.length === 0 && remove.length === 0) return;
+    const args = ["issue", "edit", String(number)];
+    for (const l of add) args.push("--add-label", l);
+    for (const l of remove) args.push("--remove-label", l);
+    const r = await run(args, { signal: opts.signal });
+    if (r.code !== 0) {
+      throw new GhError(
+        `gh issue edit ${number} exited ${r.code}: ${r.stderr.trim()}`,
+        r.code,
+        r.stderr,
+      );
+    }
+  }
+
+  return { run, listIssues, viewIssue, editIssueLabels };
 }
