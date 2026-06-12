@@ -37,6 +37,7 @@ import {
   createMutationRegistry,
   type MutationRegistry,
 } from "./mutation-registry.ts";
+import { createPreflightFromPi } from "./preflight.ts";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
   return issues.map(
@@ -84,9 +85,47 @@ function currentStateOnIssue(
 export default function (pi: ExtensionAPI): void {
   const gh = createGh(pi);
   const mutationRegistry: MutationRegistry = createMutationRegistry();
+  const preflight = createPreflightFromPi(pi);
   // mutationRegistry is closure-shared with future slices added to this
   // default-export (AFK loop, status widget). Do not export across module
   // boundaries unless that need actually arrives.
+
+  // ---------- Tool: setup_flow_preflight ----------
+  pi.registerTool({
+    name: "setup_flow_preflight",
+    label: "Setup flow preflight",
+    description:
+      "Deterministic check before `/flow setup` (or any other mutational setup step) runs: verifies `gh` is authenticated for github.com, and parses `owner/repo` from the `origin` git remote. Returns a structured result with `ok`, `ghAuthed`, `ghUser`, `owner`, `repo`, and a per-failure `errors` array (codes: `gh_not_authed`, `no_origin`, `unparseable_remote`). Read-only — never mutates.",
+    promptSnippet:
+      "Run preflight (gh auth + origin detection) before the setup wizard does anything.",
+    promptGuidelines: [
+      "Always call setup_flow_preflight as the first step of /flow setup. If ok=false, surface every error message verbatim and stop — do not attempt subsequent setup tools.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_id, _params, signal) {
+      const result = await preflight.run({ signal });
+      const lines: string[] = [];
+      lines.push(`preflight: ${result.ok ? "OK" : "FAIL"}`);
+      lines.push(
+        `  gh: ${result.ghAuthed ? `authed${result.ghUser ? ` as ${result.ghUser}` : ""}` : "not authed"}`,
+      );
+      if (result.owner && result.repo) {
+        lines.push(`  repo: ${result.owner}/${result.repo}`);
+      } else {
+        lines.push(`  repo: (not detected)`);
+      }
+      if (result.errors.length > 0) {
+        lines.push(`  errors:`);
+        for (const e of result.errors) {
+          lines.push(`    [${e.code}] ${e.message}`);
+        }
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
 
   // ---------- Tool: flow_profile_read ----------
   pi.registerTool({
