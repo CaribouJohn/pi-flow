@@ -62,6 +62,14 @@ import {
   type AfkState,
 } from "./afk-state.ts";
 import type { Snapshot } from "./poller.ts";
+import {
+  createIssueAutocompleteProvider,
+  createIssueCache,
+  collectFlowLabels,
+  isFlowLabelled,
+  type IssueCache,
+  type IssueLite,
+} from "./issue-autocomplete.ts";
 import { existsSync, rmSync } from "node:fs";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
@@ -926,6 +934,9 @@ export default function (pi: ExtensionAPI): void {
   const afkState: AfkState = createAfkState(makeStubTicker());
   // Latest poll snapshot — wired by B9 once the poller subscribes here.
   let latestSnapshot: Snapshot | null = null;
+  // B10: issue-number autocomplete cache. Module-scoped so B9 can
+  // later push the poller's snapshot in via `issueCache?.setFrom(...)`.
+  let issueCache: IssueCache | undefined;
   // Active ctx for the widget sink. The most recent /flow-afk invocation
   // "owns" the widget; mutations refresh against that ctx. If no ctx is
   // tracked yet, refresh is a no-op (the next command invocation will
@@ -1017,5 +1028,53 @@ export default function (pi: ExtensionAPI): void {
       });
       ctx.ui.setWidget("flow", lines);
     }
+  });
+
+  // B10: `#NNN` issue-number autocomplete. One `gh issue list` on
+  // session start, filtered locally to flow-labelled issues. B9 will
+  // later wire the poller's snapshot into `issueCache.setFrom(...)` so
+  // refreshes don't cost extra `gh` calls.
+  pi.on("session_start", async (_event, ctx) => {
+    let profile: Profile;
+    try {
+      profile = readProfile(ctx.cwd);
+    } catch {
+      // No profile yet (pre-/flow-setup repo). Autocomplete simply
+      // doesn't activate — the path-completion provider is unaffected.
+      return;
+    }
+    const flowLabels = collectFlowLabels(profile);
+    const gh = createGh(pi);
+
+    issueCache = createIssueCache(async () => {
+      try {
+        const issues = await gh.listIssues({ state: "open", limit: 200 });
+        const lite: IssueLite[] = issues
+          .filter((i) => isFlowLabelled(i.labels, flowLabels))
+          .map((i) => ({
+            number: i.number,
+            title: i.title,
+            state: i.state,
+            labels: i.labels,
+          }));
+        return lite;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(
+          `pi-flow: issue autocomplete failed to load: ${msg}`,
+          "error",
+        );
+        return undefined;
+      }
+    });
+
+    // Kick off the first load eagerly so the first `#` keystroke is fast.
+    void issueCache.get();
+
+    ctx.ui.addAutocompleteProvider(((current: unknown) =>
+      createIssueAutocompleteProvider(
+        current as never,
+        () => issueCache!.get(),
+      )) as never);
   });
 }
