@@ -24,6 +24,7 @@ import {
 } from "./profile.ts";
 import { createGh, type GhIssueRef, GhError } from "./gh.ts";
 import { parseDependsOn, parseTrackParent } from "./flow-deps.ts";
+import { discover as discoverResources, skillsRoot } from "./resources.ts";
 import {
   STATE_KEYS,
   stateForKey,
@@ -491,6 +492,33 @@ export default function (pi: ExtensionAPI): void {
       return {
         content: [{ type: "text", text: summary }],
         details: { ok, exitCode: r.code, elapsedMs, command: cmd },
+      };
+    },
+  });
+
+  // ---------- Tool: resources_discover ----------
+  pi.registerTool({
+    name: "resources_discover",
+    label: "Discover skill resources",
+    description:
+      "List every file under `extension/skills/`, optionally scoped to a single skill directory (`flow`, `setup-flow`). Use this when you need to know what guidance / templates / snippets ship with the extension before reading any specific file. Paths are relative to cwd, forward-slashed.",
+    promptSnippet:
+      "List the prompts / templates / snippets shipped under extension/skills/.",
+    parameters: Type.Object({
+      skill: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const files = discoverResources(ctx.cwd, { skill: params.skill });
+      const summary =
+        files.length === 0
+          ? `No resources under ${skillsRoot(ctx.cwd)}${params.skill ? `/${params.skill}` : ""}.`
+          : [
+              `${files.length} resource(s)${params.skill ? ` under ${params.skill}` : ""}:`,
+              ...files.map((f) => `  ${f}`),
+            ].join("\n");
+      return {
+        content: [{ type: "text", text: summary }],
+        details: { count: files.length, files },
       };
     },
   });
