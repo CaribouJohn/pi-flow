@@ -269,7 +269,7 @@ check(
     appendedEntries.some((e) => e.type === "pi-flow:afk-iteration"),
   );
 
-  // createBranch → pi.exec("git", ["checkout", "-b", ...])
+  // createBranch → fetches track, checkouts track, then git checkout -b
   const execCalls: { cmd: string; args: string[] }[] = [];
   const piWithCapture = {
     ...mockPi,
@@ -281,7 +281,30 @@ check(
   const depsWithCapture = buildRealDeps({ ...buildOpts, pi: piWithCapture }, activationProfile);
   await depsWithCapture.createBranch("slice/test-branch");
   check(
-    "createBranch: calls git checkout -b",
+    "createBranch: fetches track branch first",
+    execCalls.some(
+      (c) => c.cmd === "git" && c.args.includes("fetch") && c.args.includes("track/afk-loop"),
+    ),
+  );
+  check(
+    "createBranch: checks out track branch before creating slice",
+    execCalls.some(
+      (c) => c.cmd === "git" && c.args.includes("checkout") && c.args.includes("track/afk-loop"),
+    ),
+  );
+  // checkout -b must come AFTER the track checkout
+  const sliceIdx = execCalls.findIndex(
+    (c) => c.cmd === "git" && c.args[0] === "checkout" && c.args[1] === "-b",
+  );
+  const trackIdx = execCalls.findIndex(
+    (c) => c.cmd === "git" && c.args.includes("checkout") && c.args.includes("track/afk-loop"),
+  );
+  check(
+    "createBranch: slice checkout -b comes after track checkout",
+    sliceIdx > trackIdx,
+  );
+  check(
+    "createBranch: final checkout -b uses correct branch name",
     execCalls.some(
       (c) =>
         c.cmd === "git" &&
