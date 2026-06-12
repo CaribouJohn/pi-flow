@@ -36,6 +36,12 @@ export type Profile = {
   reviewer_iteration_cap: number;
   poll_cadence_seconds: number;
   ai_disclaimer: string;
+  /**
+   * Token count at which the orchestrator auto-compacts during a long
+   * AFK run. Optional in the profile — falls back to DEFAULT_COMPACT_THRESHOLD.
+   * Non-positive or non-numeric values are ignored (default used instead).
+   */
+  orchestrator_compact_threshold_tokens?: number;
   labels: {
     category: string[];
     state: StateLabels;
