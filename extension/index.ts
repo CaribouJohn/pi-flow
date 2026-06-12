@@ -70,6 +70,11 @@ import {
   type IssueCache,
   type IssueLite,
 } from "./issue-autocomplete.ts";
+import {
+  implementSpawn,
+  currentSpawnDepth,
+  SPAWN_DEPTH_ENV,
+} from "./implement-spawn.ts";
 import { existsSync, rmSync } from "node:fs";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
@@ -753,6 +758,70 @@ export default function (pi: ExtensionAPI): void {
       return {
         content: [{ type: "text", text: summary }],
         details: { ok, exitCode: r.code, elapsedMs, command: cmd },
+      };
+    },
+  });
+
+  // ---------- Tool: flow_implement_spawn (B6) ----------
+  pi.registerTool({
+    name: "flow_implement_spawn",
+    label: "Spawn implementer sub-agent",
+    description:
+      "Orchestrator-only: spawn a fresh-context `pi` subprocess to implement a single slice on a given branch, then collect a structured `{branch, commitSha, verifyResult}` result via a JSON result-file contract. Refuses to run if PI_FLOW_SPAWN_DEPTH > 0 (recursion guard). Caller is responsible for creating the branch before calling and for merging / opening a PR after.",
+    promptSnippet:
+      "Spawn an implementer sub-agent for a single slice on a single branch; await the structured result.",
+    promptGuidelines: [
+      "Only the orchestrator (the top-level AFK loop) should call this. If you are inside a spawned sub-session, do NOT call it — the recursion guard will reject you.",
+      "Create the slice branch BEFORE calling. The child commits to it but does not create it.",
+      "Do NOT call flow_set_state to advance the slice on the result of this tool; B8's loop body will read the outcome and choose the next move (review, retry, escalate, merge).",
+      "taskBrief should be a self-contained handover: the slice title, body, acceptance criteria, and any cross-slice context the implementer needs.",
+    ],
+    parameters: Type.Object({
+      issueNumber: Type.Integer({ minimum: 1 }),
+      branch: Type.String({ minLength: 1 }),
+      taskBrief: Type.String({ minLength: 1 }),
+      model: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      // Recursion guard — refuse if we're already inside a spawned child.
+      const depth = currentSpawnDepth(process.env);
+      if (depth > 0) {
+        throw new Error(
+          `flow_implement_spawn refused: already inside a pi-flow sub-session (${SPAWN_DEPTH_ENV}=${depth}). Sub-agents may not spawn further sub-agents.`,
+        );
+      }
+
+      const profile = readProfile(ctx.cwd);
+
+      const result = await implementSpawn({
+        issueNumber: params.issueNumber,
+        branch: params.branch,
+        taskBrief: params.taskBrief,
+        verifyGate: profile.verify_gate,
+        cwd: ctx.cwd,
+        model: params.model,
+        currentDepth: depth,
+        signal,
+      });
+
+      // Compose a terse summary for the orchestrator's transcript.
+      const lines: string[] = [
+        `flow_implement_spawn(#${params.issueNumber} on ${params.branch}): outcome=${result.outcome}`,
+      ];
+      if (result.outcome === "ok" && result.result) {
+        lines.push(
+          `  branch    = ${result.result.branch}`,
+          `  commitSha = ${result.result.commitSha || "(no commit)"}`,
+          `  verify    = ${result.result.verifyResult.ok ? "PASS" : `FAIL (exit ${result.result.verifyResult.exitCode})`}`,
+        );
+      } else {
+        lines.push(`  exitCode = ${result.exitCode}`, `  reason   = ${result.reason ?? "(no reason)"}`);
+        if (result.stderrTail) lines.push(`  stderr   = ${result.stderrTail}`);
+      }
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
       };
     },
   });
