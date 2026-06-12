@@ -49,8 +49,8 @@ import {
   defaultLoadTemplateBody,
   defaultScaffoldFs,
 } from "./scaffold-profile.ts";
-import { runSetupWizard } from "./setup-wizard.ts";
-import { existsSync } from "node:fs";
+import { runSetupWizard, runSetupEdit, runSetupReset } from "./setup-wizard.ts";
+import { existsSync, rmSync } from "node:fs";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
   return issues.map(
@@ -752,8 +752,15 @@ export default function (pi: ExtensionAPI): void {
   // ---------- Command: /flow-setup ----------
   pi.registerCommand("flow-setup", {
     description:
-      "Interactive bootstrap: preflight → labels → interview → profile → issue templates → smoke test → next steps. Fresh-repo happy path; edit/reset modes ship in C6.",
-    handler: async (_args, ctx) => {
+      "Interactive bootstrap (fresh repo) or edit / reset an existing profile. Args: '--edit' opens the settings list; '--reset' deletes the profile and re-runs the fresh wizard; bare invocation runs fresh on a clean repo and falls back to edit mode if a profile already exists.",
+    handler: async (args, ctx) => {
+      const trimmed = (args ?? "").trim();
+      const mode: "reset" | "edit" | "fresh" =
+        /^--?reset\b/.test(trimmed) ? "reset" :
+        /^--?edit\b/.test(trimmed) ? "edit" :
+        "fresh";
+
+      const profilePath = profilePathFor(ctx.cwd);
       const preflight = createPreflightFromPi(pi);
       const setupLabels = createSetupLabels({
         gh,
@@ -772,6 +779,56 @@ export default function (pi: ExtensionAPI): void {
       });
 
       try {
+        if (mode === "reset") {
+          await runSetupReset({
+            cwd: ctx.cwd,
+            ui: ctx.ui,
+            preflight,
+            labels: setupLabels,
+            templates: setupTemplates,
+            scaffold,
+            gh,
+            profileExists: () => existsSync(profilePath),
+            deleteProfile: () => {
+              try {
+                rmSync(profilePath, { force: true });
+                return !existsSync(profilePath);
+              } catch {
+                return false;
+              }
+            },
+            signal: ctx.signal,
+          });
+          return;
+        }
+
+        // Edit mode is requested explicitly, or implicitly when bare
+        // /flow-setup runs against a repo that already has a profile.
+        if (mode === "edit" || (mode === "fresh" && existsSync(profilePath))) {
+          if (mode === "fresh") {
+            ctx.ui.notify(
+              `Profile already present at ${profilePath} — entering edit mode. Use /flow-setup --reset to start over.`,
+              "info",
+            );
+          }
+          await runSetupEdit({
+            ui: ctx.ui,
+            scaffold,
+            loadProfile: () => {
+              try {
+                return readProfile(ctx.cwd);
+              } catch (err) {
+                ctx.ui.notify(
+                  `Could not read profile: ${profileErrorHint(err)}`,
+                  "error",
+                );
+                return null;
+              }
+            },
+          });
+          return;
+        }
+
         await runSetupWizard({
           cwd: ctx.cwd,
           ui: ctx.ui,
@@ -780,7 +837,7 @@ export default function (pi: ExtensionAPI): void {
           templates: setupTemplates,
           scaffold,
           gh,
-          profileExists: () => existsSync(profilePathFor(ctx.cwd)),
+          profileExists: () => existsSync(profilePath),
           signal: ctx.signal,
         });
       } catch (err) {

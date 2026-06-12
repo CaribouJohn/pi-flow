@@ -38,6 +38,7 @@ import {
 } from "./scaffold-profile.ts";
 import type { Gh } from "./gh.ts";
 import { GhError } from "./gh.ts";
+import type { Profile } from "./profile.ts";
 
 // --- UI seam --------------------------------------------------------------
 
@@ -272,4 +273,234 @@ export async function runSetupWizard(deps: WizardDeps): Promise<WizardOutcome> {
     smokeTestOk: smokeOk,
     summary,
   };
+}
+
+// =========================================================================
+//                      Edit mode + --reset (C6)
+// =========================================================================
+
+/**
+ * Fields the edit-mode settings list exposes. One row per field. Order
+ * matches the on-disk frontmatter for predictability — the user can ctrl-F
+ * the source if they ever wonder "which row corresponds to which key".
+ */
+const EDITABLE_FIELDS = [
+  "owner",
+  "repo",
+  "defaultBranch",
+  "trackBranchPrefix",
+  "verifyGate",
+  "inSituHarness",
+  "reviewerCommand",
+  "reviewerIterationCap",
+  "pollCadenceSeconds",
+  "aiDisclaimer",
+] as const;
+type EditableField = (typeof EDITABLE_FIELDS)[number];
+
+/** Default state labels — same convention as scaffold-profile.ts. */
+const DEFAULT_STATE_LABELS: Record<string, string> = {
+  needs_triage: "needs-triage",
+  needs_info: "needs-info",
+  needs_grilling: "needs-grilling",
+  needs_slicing: "needs-slicing",
+  needs_plan_review: "needs-plan-review",
+  tracking: "tracking",
+  ready_for_agent: "ready-for-agent",
+  ready_for_human: "ready-for-human",
+  needs_acceptance: "needs-acceptance",
+  wontfix: "wontfix",
+};
+
+/**
+ * Lift a parsed `Profile` into the `ScaffoldAnswers` shape edit mode
+ * mutates. Pure — exposed for the smoke test.
+ *
+ * Label overrides are reconstructed by diffing the profile's state map
+ * against `DEFAULT_STATE_LABELS`. Anything that matches the default
+ * drops out so we don't pin overrides the user never set.
+ */
+export function profileToAnswers(profile: Profile): ScaffoldAnswers {
+  const [owner, repo] = profile.repo.split("/");
+  const overrides: Record<string, string> = {};
+  for (const [k, v] of Object.entries(profile.labels.state)) {
+    if (DEFAULT_STATE_LABELS[k] !== v) overrides[k] = v;
+  }
+  return {
+    owner: owner ?? "",
+    repo: repo ?? "",
+    defaultBranch: profile.default_branch,
+    trackBranchPrefix: profile.track_branch_prefix,
+    verifyGate: profile.verify_gate,
+    inSituHarness: profile.in_situ_harness,
+    reviewerCommand: profile.reviewer_command,
+    reviewerIterationCap: profile.reviewer_iteration_cap,
+    pollCadenceSeconds: profile.poll_cadence_seconds,
+    aiDisclaimer: profile.ai_disclaimer,
+    ...(Object.keys(overrides).length > 0 ? { labelOverrides: overrides } : {}),
+  };
+}
+
+/** Read a field from an answers object as a string (for display in the list). */
+function display(answers: ScaffoldAnswers, key: EditableField): string {
+  const v = (answers as unknown as Record<string, unknown>)[key];
+  return v === undefined || v === null || v === "" ? "(unset)" : String(v);
+}
+
+/** Apply a string value back into the answers object, coercing numerics. */
+function applyValue(
+  answers: ScaffoldAnswers,
+  key: EditableField,
+  raw: string,
+): ScaffoldAnswers {
+  const numericKeys = new Set<EditableField>([
+    "reviewerIterationCap",
+    "pollCadenceSeconds",
+  ]);
+  const next = { ...answers } as Record<string, unknown>;
+  if (numericKeys.has(key)) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) next[key] = n;
+  } else {
+    next[key] = raw;
+  }
+  return next as ScaffoldAnswers;
+}
+
+export type EditOutcome =
+  | { ok: true; written: boolean; path: string; answers: ScaffoldAnswers; summary: string[] }
+  | { ok: false; reason: "cancelled" | "no-profile"; summary: string[] };
+
+export type EditDeps = {
+  ui: WizardUi;
+  scaffold: ScaffoldProfile;
+  /** Returns the parsed profile, or null if there's nothing to edit. */
+  loadProfile: () => Profile | null;
+};
+
+const APPLY = "→ Apply changes";
+const CANCEL = "✕ Cancel (discard changes)";
+
+/**
+ * Settings-list editor for an existing profile. Loops until the user
+ * picks Apply (calls scaffold.run with overwrite:true) or Cancel. Never
+ * re-runs labels / templates / smoke — those are bootstrap-only.
+ */
+export async function runSetupEdit(deps: EditDeps): Promise<EditOutcome> {
+  const summary: string[] = [];
+  const log = (line: string, level: "info" | "warning" | "error" = "info") => {
+    summary.push(line);
+    deps.ui.notify(line, level);
+  };
+
+  const initial = deps.loadProfile();
+  if (!initial) {
+    log("No profile to edit. Run /flow-setup to bootstrap first.", "warning");
+    return { ok: false, reason: "no-profile", summary };
+  }
+
+  let answers = profileToAnswers(initial);
+  log("Edit mode — pick a row to change a value, or Apply / Cancel.");
+
+  // Loop the settings list. Bounded at 50 iterations as a sanity rail
+  // (a real human won't edit fifty times in a row, and tests with
+  // exhausted scripts won't busy-loop).
+  for (let i = 0; i < 50; i++) {
+    const rows = EDITABLE_FIELDS.map((k) => `${k}: ${display(answers, k)}`);
+    const choice = await deps.ui.select(
+      "Edit profile fields",
+      [...rows, APPLY, CANCEL],
+    );
+
+    if (choice === undefined || choice === CANCEL) {
+      log("Cancelled — no changes written.", "warning");
+      return { ok: false, reason: "cancelled", summary };
+    }
+    if (choice === APPLY) break;
+
+    // Row format is "<key>: <value>"; recover the key by prefix match.
+    const key = EDITABLE_FIELDS.find((k) => choice.startsWith(`${k}:`));
+    if (!key) continue;
+    const current = display(answers, key);
+    const raw = await deps.ui.input(`${key}:`, current);
+    if (raw === undefined || raw === "") continue; // cancelled / cleared = keep current
+    answers = applyValue(answers, key, raw);
+  }
+
+  log("Applying edits…");
+  const r = await deps.scaffold.run(answers, { overwrite: true });
+  if (!r.written) {
+    log(`Unexpected: scaffold refused to write (${r.reason}).`, "error");
+    return { ok: true, written: false, path: r.path, answers, summary };
+  }
+  log(`Profile rewritten: ${r.path} (uncommitted).`);
+  return { ok: true, written: true, path: r.path, answers, summary };
+}
+
+export type ResetOutcome =
+  | { ok: false; reason: "cancelled" | "no-profile"; summary: string[] }
+  | {
+      ok: true;
+      wizard: WizardOutcome;
+      summary: string[];
+    };
+
+export type ResetDeps = WizardDeps & {
+  /** Best-effort delete of `.pi/flow.profile.md`. Returns true on success. */
+  deleteProfile: () => boolean;
+};
+
+/**
+ * `/flow-setup --reset`: confirm warning → delete profile → fresh wizard.
+ *
+ * Composed on top of `runSetupWizard` rather than re-implementing the
+ * flow. The internal `profileExists` callback is wrapped so the wizard
+ * sees the post-delete state.
+ */
+export async function runSetupReset(deps: ResetDeps): Promise<ResetOutcome> {
+  const summary: string[] = [];
+  const log = (line: string, level: "info" | "warning" | "error" = "info") => {
+    summary.push(line);
+    deps.ui.notify(line, level);
+  };
+
+  if (!deps.profileExists()) {
+    log("No profile to reset. Run /flow-setup to bootstrap.", "warning");
+    return { ok: false, reason: "no-profile", summary };
+  }
+
+  const go = await deps.ui.confirm(
+    "Reset pi-flow profile?",
+    "This will delete .pi/flow.profile.md and re-run the full setup wizard.\n" +
+      "Labels and issue templates already in the repo are left as-is\n" +
+      "(the wizard's apply steps are idempotent).\n\nContinue?",
+  );
+  if (!go) {
+    log("Reset cancelled — profile untouched.", "warning");
+    return { ok: false, reason: "cancelled", summary };
+  }
+
+  const deleted = deps.deleteProfile();
+  if (!deleted) {
+    log("Could not delete .pi/flow.profile.md; aborting reset.", "error");
+    return { ok: false, reason: "no-profile", summary };
+  }
+  log("Deleted .pi/flow.profile.md.");
+
+  // Run the fresh wizard, but make sure its `profileExists` reflects the
+  // post-delete state in case the caller's closure still returns true.
+  let alreadyChecked = false;
+  const wizardDeps: WizardDeps = {
+    ...deps,
+    profileExists: () => {
+      if (!alreadyChecked) {
+        alreadyChecked = true;
+        return false;
+      }
+      return deps.profileExists();
+    },
+  };
+  const wizard = await runSetupWizard(wizardDeps);
+  for (const line of wizard.summary) summary.push(line);
+  return { ok: true, wizard, summary };
 }
