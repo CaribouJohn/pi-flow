@@ -23,6 +23,7 @@ import {
   type Profile,
 } from "./profile.ts";
 import { createGh, type GhIssueRef, GhError } from "./gh.ts";
+import { parseDependsOn, parseTrackParent } from "./flow-deps.ts";
 import {
   STATE_KEYS,
   stateForKey,
@@ -252,6 +253,149 @@ export default function (pi: ExtensionAPI): void {
           tokenExpiresAt: token.expiresAt,
         },
       };
+    },
+  });
+
+  // ---------- Tool: flow_next_assignable ----------
+  /**
+   * Returns ready-for-agent issues whose every dep (parsed from
+   * `Depends on: #N` lines in the body) is closed. Optionally scoped to a
+   * track parent (only issues with `Tracked: #<parent>`).
+   *
+   * Serial gh issue view per unique dep — fine at v1 scale (<20 candidates,
+   * <5 deps each). If this becomes a bottleneck, batch via
+   * `gh api graphql` in a follow-up slice.
+   */
+  async function computeAssignable(
+    opts: { trackParent?: number; signal?: AbortSignal },
+    profile: Profile,
+  ): Promise<{ assignable: GhIssueRef[]; blocked: Array<{ issue: GhIssueRef; openDeps: number[] }> }> {
+    const readyLabel = profile.labels.state.ready_for_agent;
+    let candidates = await gh.listIssues({
+      labels: [readyLabel],
+      state: "open",
+      limit: 100,
+      signal: opts.signal,
+    });
+    if (opts.trackParent != null) {
+      const parent = opts.trackParent;
+      candidates = candidates.filter((c) => parseTrackParent(c.body) === parent);
+    }
+
+    // Cache dep lookups across candidates (sibling slices share deps).
+    const depState = new Map<number, "OPEN" | "CLOSED">();
+    async function isDepClosed(n: number): Promise<boolean> {
+      const cached = depState.get(n);
+      if (cached) return cached === "CLOSED";
+      const dep = await gh.viewIssue(n, { signal: opts.signal });
+      depState.set(n, dep.state);
+      return dep.state === "CLOSED";
+    }
+
+    const assignable: GhIssueRef[] = [];
+    const blocked: Array<{ issue: GhIssueRef; openDeps: number[] }> = [];
+    for (const issue of candidates) {
+      const deps = parseDependsOn(issue.body);
+      const open: number[] = [];
+      for (const d of deps) {
+        if (!(await isDepClosed(d))) open.push(d);
+      }
+      if (open.length === 0) assignable.push(issue);
+      else blocked.push({ issue, openDeps: open });
+    }
+    return { assignable, blocked };
+  }
+
+  pi.registerTool({
+    name: "flow_next_assignable",
+    label: "Next assignable slice(s)",
+    description:
+      "List ready-for-agent issues whose every `Depends on: #N` is closed. Optionally scope to a `trackParent` (only issues marked `Tracked: #<parent>` count). Returns assignable issues + blocked-with-reasons so the LLM can either pick one or report why nothing is pickable.",
+    promptSnippet:
+      "Find the next slice an agent can pick up (deps satisfied), optionally within a single track.",
+    parameters: Type.Object({
+      trackParent: Type.Optional(Type.Integer({ minimum: 1 })),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const profile = readProfile(ctx.cwd);
+      const { assignable, blocked } = await computeAssignable(
+        { trackParent: params.trackParent, signal },
+        profile,
+      );
+      const lines: string[] = [];
+      if (assignable.length === 0) {
+        lines.push(`No assignable issues${params.trackParent ? ` under track #${params.trackParent}` : ""}.`);
+      } else {
+        lines.push(`${assignable.length} assignable issue(s):`);
+        lines.push(...formatIssueLines(assignable));
+      }
+      if (blocked.length > 0) {
+        lines.push(``, `Blocked (${blocked.length}):`);
+        for (const { issue, openDeps } of blocked) {
+          lines.push(
+            `  #${issue.number} — waiting on ${openDeps.map((d) => `#${d}`).join(", ")}`,
+          );
+        }
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: {
+          assignableCount: assignable.length,
+          blockedCount: blocked.length,
+          assignable,
+          blocked,
+        },
+      };
+    },
+  });
+
+  // ---------- Command: /flow-next ----------
+  pi.registerCommand("flow-next", {
+    description: "Print the next assignable slice (ready-for-agent with all deps closed)",
+    handler: async (_args, ctx) => {
+      let profile: Profile;
+      try {
+        profile = readProfile(ctx.cwd);
+      } catch (err) {
+        ctx.ui.notify(
+          `Could not read flow profile: ${profileErrorHint(err)}`,
+          "error",
+        );
+        return;
+      }
+      let result;
+      try {
+        result = await computeAssignable({ signal: ctx.signal }, profile);
+      } catch (err) {
+        const msg =
+          err instanceof GhError
+            ? `${err.message}\nHint: check 'gh auth status'.`
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        ctx.ui.notify(msg, "error");
+        return;
+      }
+      const lines: string[] = [];
+      if (result.assignable.length === 0) {
+        lines.push("No assignable issues right now.");
+      } else {
+        lines.push(`${result.assignable.length} assignable:`);
+        lines.push(...formatIssueLines(result.assignable));
+      }
+      if (result.blocked.length > 0) {
+        lines.push(``, `Blocked (${result.blocked.length}):`);
+        for (const { issue, openDeps } of result.blocked) {
+          lines.push(
+            `  #${issue.number} — ${issue.title}  (waits on ${openDeps.map((d) => `#${d}`).join(", ")})`,
+          );
+        }
+      }
+      pi.sendMessage({
+        customType: "flow-next",
+        content: lines.join("\n"),
+        display: true,
+      });
     },
   });
 
