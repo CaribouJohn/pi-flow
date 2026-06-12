@@ -1,0 +1,79 @@
+name: Slice — agent-ready vertical slice
+description: A single tracer-bullet slice. Fully specified to the agent floor.
+title: "[slice] "
+labels: ["ready-for-agent", "review:agent"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A slice is the unit an AFK agent picks up. It should be small enough
+        to land in one PR, fully specified (no design judgement left), and
+        demoable on its own. If you find yourself wanting to write "and
+        then…", it's two slices.
+  - type: input
+    id: tracked
+    attributes:
+      label: Tracked parent
+      description: Issue number of the `[track]` umbrella this slice belongs to.
+      placeholder: "#3"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: One paragraph. What ships when this slice closes?
+    validations:
+      required: true
+  - type: textarea
+    id: specification
+    attributes:
+      label: Specification
+      description: |
+        Concrete shape — module names, function signatures, error codes,
+        return shapes, edge cases. The agent should not need to make design
+        decisions while implementing.
+    validations:
+      required: true
+  - type: textarea
+    id: verify
+    attributes:
+      label: How to verify
+      description: |
+        Smoke test (`bun extension/<name>.smoke.ts`) and/or manual check
+        that proves the slice works.
+    validations:
+      required: true
+  - type: textarea
+    id: depends_on
+    attributes:
+      label: Depends on
+      description: |
+        One `Depends on: #N` line per dep. Leave the body empty (not the
+        section heading) if there are none. `/flow next` parses these lines
+        to gate assignability.
+      value: |
+        Depends on: #
+  - type: dropdown
+    id: effort
+    attributes:
+      label: Effort
+      description: Rough size estimate. Mechanical / specified / heavy.
+      options:
+        - "effort:low"
+        - "effort:medium"
+        - "effort:high"
+      default: 1
+    validations:
+      required: true
+  - type: dropdown
+    id: review
+    attributes:
+      label: Review axis
+      description: Default is agent review; flip to human when judgement is needed.
+      options:
+        - "review:agent"
+        - "review:human"
+      default: 0
+    validations:
+      required: true
