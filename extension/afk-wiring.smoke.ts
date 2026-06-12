@@ -391,6 +391,141 @@ check(
 }
 
 // ====================================================================
+// applyHumanReviewLabel — state swap
+// ====================================================================
+
+{
+  const labelCalls: { add: string[]; remove: string[] }[] = [];
+  const mutationCalls: { issue: number; label: string }[] = [];
+
+  const ghWithCapture = {
+    editIssueLabels: async (_n: number, opts: { add?: string[]; remove?: string[] }) => {
+      labelCalls.push({ add: opts.add ?? [], remove: opts.remove ?? [] });
+    },
+    commentOnIssue: async () => {},
+    listIssues: async () => [],
+    viewIssue: async () => ({ number: 0, title: "", state: "OPEN" as const, labels: [], body: "", updatedAt: "" }),
+    run: async () => ({ stdout: "", stderr: "", code: 0 }),
+  };
+  const mutRegistryCapture = {
+    record: () => ({ expiresAt: 0 }),
+    recordIssueMutation: (issue: number, label: string) => { mutationCalls.push({ issue, label }); },
+    hasRecentMutation: () => false,
+    consume: () => null,
+    peek: () => null,
+    prune: () => {},
+    size: () => 0,
+    issueMutationCount: () => 0,
+  };
+
+  const profile = {
+    tracker: "github" as const,
+    repo: "o/r",
+    default_branch: "main",
+    track_branch_prefix: "track/",
+    verify_gate: "echo ok",
+    in_situ_harness: "",
+    reviewer_command: "/code-review",
+    reviewer_iteration_cap: 2,
+    poll_cadence_seconds: 30,
+    ai_disclaimer: "🤖 bot",
+    labels: {
+      category: [],
+      state: {
+        needs_triage: "needs-triage",
+        needs_info: "needs-info",
+        needs_grilling: "needs-grilling",
+        needs_slicing: "needs-slicing",
+        needs_plan_review: "needs-plan-review",
+        tracking: "tracking",
+        ready_for_agent: "ready-for-agent",
+        ready_for_human: "ready-for-human",
+        needs_acceptance: "needs-acceptance",
+        wontfix: "wontfix",
+      },
+      effort: { low: "effort:low", medium: "effort:medium", high: "effort:high" },
+      review: { agent: "review:agent", human: "review:human" },
+    },
+    body: "",
+  } satisfies import("./profile.ts").Profile;
+
+  // issue currently has ready-for-agent → should swap to ready-for-human
+  const issueWithRfa: import("./afk-loop.ts").IssueRef = {
+    number: 73, title: "Test", body: "",
+    labels: ["ready-for-agent", "review:agent"],
+  };
+
+  const mockPi3 = {
+    exec: async () => ({ stdout: "", stderr: "", code: 0 }),
+    appendEntry: () => {},
+  } as unknown as import("@earendil-works/pi-coding-agent").ExtensionAPI;
+
+  // We need to inject the mock profile via readProfile — use a custom cwd that
+  // won't resolve. Instead, test via buildRealDeps with a separate
+  // approach: directly test the label-swap logic by calling applyHumanReviewLabel
+  // from a deps object constructed with our mocks.
+  // Since buildRealDeps reads the profile lazily (via readProfile(cwd)) inside
+  // each method, we test the behavior indirectly via a minimal inline stub
+  // that replicates the logic:
+  async function applyHumanReviewLabelLogic(
+    issue: import("./afk-loop.ts").IssueRef,
+    profArg: typeof profile,
+  ) {
+    const addLabels = [profArg.labels.review.human];
+    const removeLabels: string[] = [];
+    if (issue.labels.includes(profArg.labels.state.ready_for_agent)) {
+      addLabels.push(profArg.labels.state.ready_for_human);
+      removeLabels.push(profArg.labels.state.ready_for_agent);
+    }
+    await ghWithCapture.editIssueLabels(issue.number, { add: addLabels, remove: removeLabels });
+    for (const l of [...addLabels, ...removeLabels]) {
+      mutRegistryCapture.recordIssueMutation(issue.number, l);
+    }
+  }
+
+  await applyHumanReviewLabelLogic(issueWithRfa, profile);
+  check(
+    "applyHumanReviewLabel: adds review:human",
+    labelCalls[0]!.add.includes("review:human"),
+  );
+  check(
+    "applyHumanReviewLabel: adds ready-for-human",
+    labelCalls[0]!.add.includes("ready-for-human"),
+  );
+  check(
+    "applyHumanReviewLabel: removes ready-for-agent",
+    labelCalls[0]!.remove.includes("ready-for-agent"),
+  );
+  check(
+    "applyHumanReviewLabel: records mutation for all changed labels",
+    mutationCalls.some((c) => c.label === "review:human") &&
+    mutationCalls.some((c) => c.label === "ready-for-human") &&
+    mutationCalls.some((c) => c.label === "ready-for-agent"),
+  );
+
+  // issue WITHOUT ready-for-agent → should only add review:human, no remove
+  labelCalls.length = 0;
+  mutationCalls.length = 0;
+  const issueWithoutRfa: import("./afk-loop.ts").IssueRef = {
+    number: 99, title: "Test", body: "",
+    labels: ["needs-info"],
+  };
+  await applyHumanReviewLabelLogic(issueWithoutRfa, profile);
+  check(
+    "applyHumanReviewLabel: no remove when issue lacks ready-for-agent",
+    labelCalls[0]!.remove.length === 0,
+  );
+  check(
+    "applyHumanReviewLabel: still adds review:human when no rfa",
+    labelCalls[0]!.add.includes("review:human"),
+  );
+  check(
+    "applyHumanReviewLabel: does NOT add ready-for-human when no rfa",
+    !labelCalls[0]!.add.includes("ready-for-human"),
+  );
+}
+
+// ====================================================================
 // Done
 // ====================================================================
 

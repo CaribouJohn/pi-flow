@@ -337,9 +337,23 @@ export function buildRealDeps(
     },
 
     async applyHumanReviewLabel(issue: IssueRef): Promise<void> {
-      const label = getProfile().labels.review.human;
-      await gh.editIssueLabels(issue.number, { add: [label] });
-      mutationRegistry.recordIssueMutation(issue.number, label);
+      const profile = getProfile();
+      const addLabels = [profile.labels.review.human];
+      // Swap the state to ready-for-human so the loop does NOT re-pick
+      // this issue on the next tick. Without this swap, ready-for-agent
+      // stays on and the loop escalates the same issue on every cycle.
+      const removeLabels: string[] = [];
+      if (issue.labels.includes(profile.labels.state.ready_for_agent)) {
+        addLabels.push(profile.labels.state.ready_for_human);
+        removeLabels.push(profile.labels.state.ready_for_agent);
+      }
+      await gh.editIssueLabels(issue.number, {
+        add: addLabels,
+        remove: removeLabels,
+      });
+      for (const l of [...addLabels, ...removeLabels]) {
+        mutationRegistry.recordIssueMutation(issue.number, l);
+      }
     },
 
     async comment(issue: IssueRef, body: string): Promise<void> {
