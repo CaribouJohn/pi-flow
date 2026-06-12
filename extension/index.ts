@@ -44,6 +44,11 @@ import {
   defaultFs as defaultTemplatesFs,
   defaultLoadBundled,
 } from "./setup-templates.ts";
+import {
+  createScaffoldProfile,
+  defaultLoadTemplateBody,
+  defaultScaffoldFs,
+} from "./scaffold-profile.ts";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
   return issues.map(
@@ -243,6 +248,65 @@ export default function (pi: ExtensionAPI): void {
       }
       return {
         content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  // ---------- Tool: setup_flow_scaffold_profile ----------
+  pi.registerTool({
+    name: "setup_flow_scaffold_profile",
+    label: "Setup flow scaffold profile",
+    description:
+      "Writes `.pi/flow.profile.md` from an answers object (collected by the /flow setup wizard) and the canonical body template. Frontmatter is synthesised so the file round-trips through `flow_profile_read`. Refuses to overwrite an existing profile unless `overwrite:true` is passed (then `/flow setup --edit` and `--reset` use it). No commit — the file is left in the working tree.",
+    promptSnippet:
+      "Write .pi/flow.profile.md from the collected wizard answers (no commit).",
+    promptGuidelines: [
+      "Call setup_flow_scaffold_profile only after collecting the wizard answers. If it returns {written:false, reason:'exists'} during a fresh-repo run, surface that to the user and stop — the edit / reset paths belong to /flow setup --edit and --reset, not to this tool.",
+    ],
+    parameters: Type.Object({
+      answers: Type.Object({
+        owner: Type.String({ description: "GitHub owner (user or org)." }),
+        repo: Type.String({ description: "GitHub repo name." }),
+        defaultBranch: Type.String({
+          description: "Default branch (e.g. 'main').",
+        }),
+        trackBranchPrefix: Type.Optional(Type.String()),
+        verifyGate: Type.Optional(Type.String()),
+        inSituHarness: Type.Optional(Type.String()),
+        reviewerCommand: Type.Optional(Type.String()),
+        reviewerIterationCap: Type.Optional(Type.Number()),
+        pollCadenceSeconds: Type.Optional(Type.Number()),
+        aiDisclaimer: Type.Optional(Type.String()),
+        labelOverrides: Type.Optional(
+          Type.Record(Type.String(), Type.String(), {
+            description:
+              "Map of state-key (e.g. 'ready_for_agent') to non-default label string.",
+          }),
+        ),
+      }),
+      overwrite: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, replace an existing .pi/flow.profile.md. Default false.",
+        }),
+      ),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const scaffold = createScaffoldProfile({
+        cwd: ctx.cwd,
+        fs: defaultScaffoldFs(),
+        loadTemplateBody: defaultLoadTemplateBody(ctx.cwd),
+        loadCanonicalLabelsMd: defaultLoadCanonical(ctx.cwd),
+      });
+      const result = await scaffold.run(params.answers, {
+        overwrite: params.overwrite ?? false,
+      });
+      const text = result.written
+        ? `profile written: ${result.path} (uncommitted)`
+        : `profile already exists at ${result.path} — not overwritten (reason: ${result.reason}). Re-run with overwrite:true to replace.`;
+      return {
+        content: [{ type: "text", text }],
         details: result,
       };
     },
