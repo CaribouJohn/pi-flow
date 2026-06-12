@@ -4,8 +4,12 @@
   "workspaces": {
     "": {
       "name": "pi-flow",
+      "dependencies": {
+        "yaml": "^2.5.0",
+      },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "*",
+        "typebox": "*",
         "typescript": "^5.4.0",
       },
     },
