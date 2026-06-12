@@ -15,6 +15,26 @@ the profile carries the *specifics*. Role names below are **canonical** — reso
 the repo's actual label strings via the profile's mapping. **If no profile exists, say so
 and stop — never invent labels.**
 
+## Tool inventory
+
+When this skill runs inside the **pi-flow extension** (the default), prefer the typed
+tools below over shelling out to `gh`. They enforce the profile's invariants (label
+resolution, transition validation, AI disclaimer, mutation-token bookkeeping) so the
+LLM cannot accidentally bypass them:
+
+| Tool | Use it for |
+| --- | --- |
+| `flow_profile_read` | Load the profile once per session before anything else. |
+| `flow_issues_query` | List issues by state-axis key (`ready_for_agent`, `needs_acceptance`, …). |
+| `flow_next_assignable` | Compute the derived assignable set (`ready_for_agent` ∧ all deps closed), optionally scoped to a track parent. |
+| `flow_set_state` | Atomically move an issue to a new state. Refuses illegal transitions with the legal targets listed in the error. |
+| `flow_comment` | Post a comment with the profile's AI disclaimer prepended automatically. |
+| `flow_verify` | Run the profile's `verify_gate` and return PASS/FAIL + tails. |
+| `resources_discover` | List the prompts / templates / snippets shipped under `extension/skills/`. |
+
+If any tool is **not** registered, fall back to `gh` directly — the workflows below stay
+valid. Otherwise: **never shell `gh` for an operation a `flow_*` tool covers**.
+
 ## Quick start
 
 1. Read the profile (`docs/agents/flow-profile.md`).
@@ -29,7 +49,8 @@ plan-gate escalation and acceptance); the middle runs unattended.
 
 ## Workflow: show what needs attention
 
-Query the tracker and present, oldest-first with counts + a one-line summary each, the
+Use `flow_issues_query` for each bucket (or batch them in a single sub-session). Present,
+oldest-first with counts + a one-line summary each, the
 buckets that await the maintainer: unlabeled, `needs-triage`, `needs-info` with reporter
 activity since the last note, **`needs-grilling` (await your design session)**,
 **`needs-plan-review` tracks the agent escalated**, and **`needs-acceptance` issues whose
@@ -42,7 +63,7 @@ slices are all merged**. Let the maintainer pick one.
    out-of-scope store for a prior rejection that resembles it.
 2. **Recommend** — present one **category** + one **role** recommendation with reasoning and
    a short codebase summary, then wait. Reproduce bugs first when you can.
-3. **Apply** the agreed transition (consult the profile's state machine; flag unusual ones).
+3. **Apply** the agreed transition with `flow_set_state` (consult the profile's state machine; flag unusual ones).
    See [TEMPLATES.md](TEMPLATES.md) for the brief / notes shapes.
    - `ready-for-agent` → post an agent brief; add an `effort:` label. `review:agent` is the
      **default** (the profile's reviewer-agent gate) — set `review:human` only to escalate.
@@ -73,7 +94,7 @@ a grill is an interview *with* the maintainer. It **surfaces and hands off**:
 
 ## Workflow: decompose (needs-slicing → needs-plan-review)
 
-When an issue is too big/fuzzy, label it `needs-slicing` and run `/to-issues` to create the
+When an issue is too big/fuzzy, label it `needs-slicing` (via `flow_set_state`) and run `/to-issues` to create the
 child slices. **`/to-issues` only creates children — it never touches the parent.** After it
 returns, *this skill* relabels the parent **`needs-plan-review`** (clearing `needs-slicing`)
 — **not** straight to `tracking` (ADR-0036): a freshly-sliced track must pass the plan gate
@@ -102,9 +123,10 @@ For a `tracking` parent, drive its slices to done **without the human**, per the
 track-execution model. Loop until no assignable slice remains:
 
 1. **Pick the next assignable slice** = `ready-for-agent`, no open `Depends on:` (the derive
-   step). Self-assign it (the in-progress signal).
+   step). Use `flow_next_assignable` for this — do **not** re-implement the derive logic.
+   Self-assign the chosen slice (the in-progress signal).
 2. **Implement** it on a slice branch off the **track branch**; get the **verify gate**
-   green. For a UI-bearing slice, **verify in situ** via the profile's real-app harness
+   green via `flow_verify`. For a UI-bearing slice, **verify in situ** via the profile's real-app harness
    (`electrobun-dev`) and capture the evidence.
 3. **Independent review gate** — run a **separate reviewer agent** (`/code-review`, fresh
    context — *never* the implementer) over the slice. `review:human` slices route to the
@@ -131,7 +153,8 @@ track branch:
 ## Workflow: what's ready to pick up (derived states)
 
 The profile defines blocked / in-progress / implemented / reviewed as **derived**, not
-labels. Compute them inline:
+labels. When the extension is loaded, `flow_next_assignable` already implements the
+first (most common) computation. Compute the rest inline:
 
 - **assignable now** = `ready-for-agent` minus any issue with an **open dependency**. Read
   refs *only* from the issue's dependency section (`Depends on:` or a `## Blocked by` list) —
@@ -146,5 +169,6 @@ An issue's **assignee** is the in-progress signal — a claimed `ready-*` issue.
 ## Quick override
 
 "Move #42 to X" → trust the maintainer: confirm the actions (label changes, comment, close),
-apply directly, skip grilling. Flag the transition if it looks unusual per the profile's
-machine.
+apply directly via `flow_set_state` (and `flow_comment` for any note), skip grilling. Flag
+the transition if `flow_set_state` refuses (it will list the legal targets) or if it looks
+unusual per the profile's machine.
