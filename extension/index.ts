@@ -399,6 +399,52 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
+  // ---------- Tool: flow_comment ----------
+  /**
+   * Compose the final comment body: prepend the profile's AI disclaimer
+   * once (if not already present in the input), then a blank line, then
+   * the body. Idempotent: if the LLM already prepended the disclaimer,
+   * we don't double it up.
+   */
+  function composeComment(profile: Profile, body: string): string {
+    const disclaimer = profile.ai_disclaimer;
+    const trimmed = body.trimStart();
+    if (trimmed.startsWith(disclaimer)) return body;
+    return `${disclaimer}\n\n${body}`;
+  }
+
+  pi.registerTool({
+    name: "flow_comment",
+    label: "Comment on issue",
+    description:
+      "Post a comment on a GitHub issue. The profile's AI disclaimer is automatically prepended (or detected and left alone if the body already opens with it) so every agent-authored comment is identifiable. Use for state-change rationales, plan-gate verdicts, info requests, and acceptance verdicts.",
+    promptSnippet:
+      "Post a comment on an issue (AI disclaimer prepended automatically).",
+    promptGuidelines: [
+      "Never call `gh issue comment` directly — always use flow_comment so the disclaimer is enforced.",
+      "Keep comments short and actionable. State changes belong in flow_set_state's reason field, not comments.",
+    ],
+    parameters: Type.Object({
+      issue: Type.Integer({ minimum: 1 }),
+      body: Type.String({ minLength: 1 }),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const profile = readProfile(ctx.cwd);
+      const composed = composeComment(profile, params.body);
+      await gh.commentOnIssue(params.issue, composed, { signal });
+      return {
+        content: [
+          { type: "text", text: `Commented on #${params.issue} (${composed.length} chars).` },
+        ],
+        details: {
+          issue: params.issue,
+          length: composed.length,
+          disclaimerApplied: !params.body.trimStart().startsWith(profile.ai_disclaimer),
+        },
+      };
+    },
+  });
+
   // ---------- Command: /flow-status ----------
   pi.registerCommand("flow-status", {
     description: "List issues currently labelled `ready_for_agent` (profile-resolved)",

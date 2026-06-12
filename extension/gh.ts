@@ -48,6 +48,8 @@ export type EditIssueLabelsOpts = {
   signal?: AbortSignal;
 };
 
+export type CommentOpts = { signal?: AbortSignal };
+
 export type Gh = {
   run(
     args: string[],
@@ -59,6 +61,7 @@ export type Gh = {
     opts?: { signal?: AbortSignal },
   ): Promise<GhIssueRef>;
   editIssueLabels(number: number, opts: EditIssueLabelsOpts): Promise<void>;
+  commentOnIssue(number: number, body: string, opts?: CommentOpts): Promise<void>;
 };
 
 type RawIssue = {
@@ -198,5 +201,23 @@ export function createGh(pi: ExtensionAPI): Gh {
     }
   }
 
-  return { run, listIssues, viewIssue, editIssueLabels };
+  async function commentOnIssue(
+    number: number,
+    body: string,
+    opts: CommentOpts = {},
+  ): Promise<void> {
+    const r = await run(
+      ["issue", "comment", String(number), "--body", body],
+      { signal: opts.signal },
+    );
+    if (r.code !== 0) {
+      throw new GhError(
+        `gh issue comment ${number} exited ${r.code}: ${r.stderr.trim()}`,
+        r.code,
+        r.stderr,
+      );
+    }
+  }
+
+  return { run, listIssues, viewIssue, editIssueLabels, commentOnIssue };
 }
