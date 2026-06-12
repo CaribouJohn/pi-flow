@@ -61,12 +61,19 @@ import {
   type AfkState,
   type StubTicker,
 } from "./afk-state.ts";
-import type { Snapshot } from "./poller.ts";
+import { createPoller, type Poller } from "./poller-scheduler.ts";
+import type { Diff, Snapshot } from "./poller.ts";
 import { runOneTick, type AfkLoopDeps } from "./afk-loop.ts";
 import {
   replayIterations,
   AFK_ITERATION_ENTRY_TYPE,
 } from "./afk-iteration.ts";
+import {
+  buildOnDiffHandler,
+  buildPollDepsFromPi,
+  createBlockTransitionState,
+  type PollerReactionDeps,
+} from "./afk-poller-wiring.ts";
 import {
   buildRealDeps,
   onTickOutcomeReset,
@@ -1126,8 +1133,13 @@ export default function (pi: ExtensionAPI): void {
   };
   const afkState: AfkState = createAfkState(realTicker);
 
-  // Latest poll snapshot — wired by B9 once the poller subscribes here.
+  // Latest poll snapshot — wired by B9 poller below.
   let latestSnapshot: Snapshot | null = null;
+  // B9: block-transition state machine (one-shot fully-blocked notification).
+  const blockState = createBlockTransitionState();
+  // B9: poller instance — created at session_start; module-scoped so
+  // /flow-afk-stop can call poller?.stop().
+  let poller: Poller | null = null;
   // B10: issue-number autocomplete cache. Module-scoped so B9 can
   // later push the poller's snapshot in via `issueCache?.setFrom(...)`.
   let issueCache: IssueCache | undefined;
@@ -1215,6 +1227,7 @@ export default function (pi: ExtensionAPI): void {
       }
       afkState.setActive(false);
       afkState.ticker.stop();
+      poller?.stop();
       ctx.ui.setWidget("flow", []);
       widgetCtx = null;
       const entry: AfkEntry = { afkActive: false, ts: Date.now() };
@@ -1296,5 +1309,83 @@ export default function (pi: ExtensionAPI): void {
         current as never,
         () => issueCache!.get(),
       )) as never);
+  });
+
+  // ---------- B9: poller setup + diff reaction ----------
+  pi.on("session_start", async (_event, ctx) => {
+    let profile: Profile;
+    try {
+      profile = readProfile(ctx.cwd);
+    } catch {
+      // No profile yet — poller doesn't activate.
+      return;
+    }
+    const flowLabels = collectFlowLabels(profile);
+    const pollLabels = Array.from(flowLabels);
+
+    // Reaction deps wired to real pi / gh / mutationRegistry.
+    const reactionDeps: PollerReactionDeps = {
+      isMutation: (issue, label) =>
+        mutationRegistry.hasRecentMutation(issue, label),
+      labels: {
+        humanGate: [
+          profile.labels.state.ready_for_human,
+          profile.labels.state.needs_info,
+          profile.labels.review.human,
+        ],
+        agentPickable: profile.labels.state.ready_for_agent,
+        reviewHuman: profile.labels.review.human,
+      },
+      sendResume: async () => {
+        // Trigger the loop to check for work on the next tick.
+        // The reentrancy lock in runOneTick handles concurrent wakeups.
+        if (afkState.isActive() && realDeps) {
+          void runOneTick(realDeps);
+        }
+      },
+      onFullyBlocked: async (issueNumbers) => {
+        const n = issueNumbers.length;
+        const msg = `pi-flow: ${n || "all"} issue${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} your attention`;
+        ctx.ui.notify(msg, "info");
+        pi.appendEntry("flow-attention", {
+          ts: Date.now(),
+          blockingIssues: issueNumbers,
+        });
+        // Post one comment per blocking issue (fire-and-forget, errors logged).
+        for (const num of issueNumbers) {
+          gh.commentOnIssue(
+            num,
+            `${profile.ai_disclaimer}\n\nThis issue is blocking the AFK loop. Human attention needed.`,
+          ).catch((err: unknown) => {
+            const msg2 = err instanceof Error ? err.message : String(err);
+            ctx.ui.notify(`pi-flow: failed to comment on #${num}: ${msg2}`, "error");
+          });
+        }
+      },
+    };
+
+    const onDiff = buildOnDiffHandler(reactionDeps, blockState);
+
+    poller = createPoller({
+      pollDeps: buildPollDepsFromPi(pi),
+      pollOpts: { labels: pollLabels },
+    });
+
+    poller.onDiff(async (diffs: Diff[], snapshot: Snapshot) => {
+      // Update module-scope snapshot (widget + next computeAssignable call).
+      latestSnapshot = snapshot;
+      refreshAfkWidget();
+      // Update issue autocomplete cache if available.
+      // (setFrom takes IssueLite which requires title; snapshot only
+      // has IssueSnap — we skip for now, cache refreshes itself lazily.)
+      await onDiff(diffs, snapshot);
+    });
+
+    poller.onError((err: unknown) => {
+      const msg2 = err instanceof Error ? err.message : String(err);
+      ctx.ui.notify(`pi-flow poller error: ${msg2}`, "error");
+    });
+
+    poller.start();
   });
 }
