@@ -75,6 +75,7 @@ import {
   currentSpawnDepth,
   SPAWN_DEPTH_ENV,
 } from "./implement-spawn.ts";
+import { reviewSpawn } from "./review-spawn.ts";
 import { existsSync, rmSync } from "node:fs";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
@@ -758,6 +759,78 @@ export default function (pi: ExtensionAPI): void {
       return {
         content: [{ type: "text", text: summary }],
         details: { ok, exitCode: r.code, elapsedMs, command: cmd },
+      };
+    },
+  });
+
+  // ---------- Tool: flow_review_spawn (B7) ----------
+  pi.registerTool({
+    name: "flow_review_spawn",
+    label: "Spawn reviewer sub-agent",
+    description:
+      "Orchestrator-only: spawn a fresh-context `pi` subprocess to review a slice branch (optionally a PR) and return a structured `{verdict, comments[]}` verdict via a JSON result-file contract. The reviewer fetches its own diff via `gh pr diff` / `git diff` (bash is available to the sub-session). Refuses to run if PI_FLOW_SPAWN_DEPTH > 0 (recursion guard). Caller is responsible for posting comments back to the PR / advancing state on the verdict.",
+    promptSnippet:
+      "Spawn a reviewer sub-agent for a single slice branch; await the structured verdict.",
+    promptGuidelines: [
+      "Only the orchestrator (the top-level AFK loop) should call this. If you are inside a spawned sub-session, do NOT call it — the recursion guard will reject you.",
+      "Pass prNumber when the slice already has a PR (lets the reviewer use `gh pr diff $N`); omit it for pre-PR reviews.",
+      "Do NOT call flow_set_state or flow_comment based on the verdict here; B8's loop body owns those moves.",
+      "sliceBrief should restate the slice's acceptance criteria so the reviewer can judge against intent, not just diff aesthetics.",
+    ],
+    parameters: Type.Object({
+      issueNumber: Type.Integer({ minimum: 1 }),
+      sliceBranch: Type.String({ minLength: 1 }),
+      baseBranch: Type.String({ minLength: 1 }),
+      prNumber: Type.Optional(Type.Integer({ minimum: 1 })),
+      sliceBrief: Type.Optional(Type.String()),
+      model: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      // Recursion guard — shared with flow_implement_spawn.
+      const depth = currentSpawnDepth(process.env);
+      if (depth > 0) {
+        throw new Error(
+          `flow_review_spawn refused: already inside a pi-flow sub-session (${SPAWN_DEPTH_ENV}=${depth}). Sub-agents may not spawn further sub-agents.`,
+        );
+      }
+
+      const profile = readProfile(ctx.cwd);
+
+      const result = await reviewSpawn({
+        issueNumber: params.issueNumber,
+        sliceBranch: params.sliceBranch,
+        baseBranch: params.baseBranch,
+        prNumber: params.prNumber,
+        sliceBrief: params.sliceBrief,
+        cwd: ctx.cwd,
+        model: params.model,
+        currentDepth: depth,
+        reviewerCommand: profile.reviewer_command,
+        signal,
+      });
+
+      const lines: string[] = [
+        `flow_review_spawn(#${params.issueNumber} on ${params.sliceBranch}): outcome=${result.outcome}`,
+      ];
+      if (result.outcome === "ok" && result.result) {
+        lines.push(
+          `  verdict  = ${result.result.verdict}`,
+          `  comments = ${result.result.comments.length} item(s)`,
+        );
+        for (const c of result.result.comments.slice(0, 5)) {
+          lines.push(`    - ${c.split("\n")[0].slice(0, 160)}`);
+        }
+        if (result.result.comments.length > 5) {
+          lines.push(`    … (+${result.result.comments.length - 5} more)`);
+        }
+      } else {
+        lines.push(`  exitCode = ${result.exitCode}`, `  reason   = ${result.reason ?? "(no reason)"}`);
+        if (result.stderrTail) lines.push(`  stderr   = ${result.stderrTail}`);
+      }
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
       };
     },
   });
