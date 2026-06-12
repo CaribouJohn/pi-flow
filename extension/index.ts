@@ -49,6 +49,8 @@ import {
   defaultLoadTemplateBody,
   defaultScaffoldFs,
 } from "./scaffold-profile.ts";
+import { runSetupWizard } from "./setup-wizard.ts";
+import { existsSync } from "node:fs";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
   return issues.map(
@@ -744,6 +746,47 @@ export default function (pi: ExtensionAPI): void {
         content: [{ type: "text", text: summary }],
         details: { count: files.length, files },
       };
+    },
+  });
+
+  // ---------- Command: /flow-setup ----------
+  pi.registerCommand("flow-setup", {
+    description:
+      "Interactive bootstrap: preflight → labels → interview → profile → issue templates → smoke test → next steps. Fresh-repo happy path; edit/reset modes ship in C6.",
+    handler: async (_args, ctx) => {
+      const preflight = createPreflightFromPi(pi);
+      const setupLabels = createSetupLabels({
+        gh,
+        loadCanonical: defaultLoadCanonical(ctx.cwd),
+      });
+      const setupTemplates = createSetupTemplates({
+        loadBundled: defaultLoadBundled(ctx.cwd),
+        cwd: ctx.cwd,
+        fs: defaultTemplatesFs(),
+      });
+      const scaffold = createScaffoldProfile({
+        cwd: ctx.cwd,
+        fs: defaultScaffoldFs(),
+        loadTemplateBody: defaultLoadTemplateBody(ctx.cwd),
+        loadCanonicalLabelsMd: defaultLoadCanonical(ctx.cwd),
+      });
+
+      try {
+        await runSetupWizard({
+          cwd: ctx.cwd,
+          ui: ctx.ui,
+          preflight,
+          labels: setupLabels,
+          templates: setupTemplates,
+          scaffold,
+          gh,
+          profileExists: () => existsSync(profilePathFor(ctx.cwd)),
+          signal: ctx.signal,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`/flow-setup failed: ${msg}`, "error");
+      }
     },
   });
 
