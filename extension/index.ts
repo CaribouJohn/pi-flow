@@ -445,6 +445,56 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
+  // ---------- Tool: flow_verify ----------
+  pi.registerTool({
+    name: "flow_verify",
+    label: "Run verify gate",
+    description:
+      "Run the profile's `verify_gate` shell command (via `bash -c`). Returns the exit code and the tail of stdout/stderr. Exit 0 = green; any other code is a failure the agent must surface (and must NOT merge over).",
+    promptSnippet:
+      "Run the verify gate before merging a slice into its track branch.",
+    promptGuidelines: [
+      "Always call flow_verify before closing a slice or merging into a track branch.",
+      "On non-zero exit, report the tail to the human and stop — do not retry by changing the verify_gate.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_id, _params, signal, _onUpdate, ctx) {
+      const profile = readProfile(ctx.cwd);
+      const cmd = profile.verify_gate;
+      const started = Date.now();
+      let r: Awaited<ReturnType<typeof pi.exec>>;
+      try {
+        r = await pi.exec("bash", ["-c", cmd], { signal });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `verify gate failed to spawn (bash not on PATH?): ${msg}`,
+        );
+      }
+      const elapsedMs = Date.now() - started;
+      const tailOf = (s: string, lines = 40) => {
+        const arr = (s ?? "").split(/\r?\n/);
+        return arr.slice(-lines).join("\n");
+      };
+      const ok = r.code === 0;
+      const summary = [
+        `verify gate: ${ok ? "PASS" : `FAIL (exit ${r.code})`} in ${elapsedMs}ms`,
+        `command: ${cmd}`,
+        r.stdout ? `--- stdout (tail) ---\n${tailOf(r.stdout)}` : "(no stdout)",
+        r.stderr ? `--- stderr (tail) ---\n${tailOf(r.stderr)}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n");
+      if (!ok) {
+        throw new Error(summary);
+      }
+      return {
+        content: [{ type: "text", text: summary }],
+        details: { ok, exitCode: r.code, elapsedMs, command: cmd },
+      };
+    },
+  });
+
   // ---------- Command: /flow-status ----------
   pi.registerCommand("flow-status", {
     description: "List issues currently labelled `ready_for_agent` (profile-resolved)",
