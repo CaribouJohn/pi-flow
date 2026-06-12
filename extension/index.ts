@@ -38,6 +38,7 @@ import {
   type MutationRegistry,
 } from "./mutation-registry.ts";
 import { createPreflightFromPi } from "./preflight.ts";
+import { createSetupLabels, defaultLoadCanonical } from "./setup-labels.ts";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
   return issues.map(
@@ -118,6 +119,70 @@ export default function (pi: ExtensionAPI): void {
         lines.push(`  errors:`);
         for (const e of result.errors) {
           lines.push(`    [${e.code}] ${e.message}`);
+        }
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: result,
+      };
+    },
+  });
+
+  // ---------- Tool: setup_flow_apply_labels ----------
+  pi.registerTool({
+    name: "setup_flow_apply_labels",
+    label: "Setup flow apply labels",
+    description:
+      "Idempotent label bootstrap. Reads the canonical label vocabulary from `extension/skills/setup-flow/labels.md` and `gh label create`s anything missing in the current repo. Never edits or deletes existing labels — colour/description drift is reported in `details.drift` but not auto-corrected. `dryRun: true` lists what would be created without calling `gh`.",
+    promptSnippet:
+      "Apply the canonical pi-flow label set to this repo, creating only what's missing.",
+    promptGuidelines: [
+      "Run setup_flow_apply_labels after preflight succeeds. Re-running is safe: it reports already-present labels rather than recreating them. Surface any `drift` entries to the user verbatim — do not attempt to fix them.",
+    ],
+    parameters: Type.Object({
+      dryRun: Type.Optional(
+        Type.Boolean({
+          description:
+            "If true, list what would be created in `skippedDueToDryRun` without calling `gh label create`.",
+        }),
+      ),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const setupLabels = createSetupLabels({
+        gh,
+        loadCanonical: defaultLoadCanonical(ctx.cwd),
+      });
+      const result = await setupLabels.apply({
+        dryRun: params.dryRun ?? false,
+        signal,
+      });
+      const lines: string[] = [];
+      lines.push(
+        `labels: ${result.created.length} created, ${result.alreadyPresent.length} already present` +
+          (result.skippedDueToDryRun.length > 0
+            ? `, ${result.skippedDueToDryRun.length} would-create (dry run)`
+            : ""),
+      );
+      if (result.created.length > 0) {
+        lines.push(`  created: ${result.created.join(", ")}`);
+      }
+      if (result.skippedDueToDryRun.length > 0) {
+        lines.push(`  would create: ${result.skippedDueToDryRun.join(", ")}`);
+      }
+      if (result.drift.length > 0) {
+        lines.push(`  drift (${result.drift.length}):`);
+        for (const d of result.drift) {
+          const colorMismatch =
+            d.actual.color !== d.canonical.color
+              ? `color ${d.actual.color}→${d.canonical.color}`
+              : "";
+          const descMismatch =
+            d.actual.description !== d.canonical.description
+              ? `desc "${d.actual.description}"→"${d.canonical.description}"`
+              : "";
+          lines.push(
+            `    ${d.name}: ${[colorMismatch, descMismatch].filter(Boolean).join("; ")}`,
+          );
         }
       }
       return {
