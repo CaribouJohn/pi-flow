@@ -50,6 +50,14 @@ import {
   defaultScaffoldFs,
 } from "./scaffold-profile.ts";
 import { runSetupWizard, runSetupEdit, runSetupReset } from "./setup-wizard.ts";
+import {
+  createAfkState,
+  makeStubTicker,
+  renderStatusWidget,
+  deriveCounts,
+  type AfkState,
+} from "./afk-state.ts";
+import type { Snapshot } from "./poller.ts";
 import { existsSync, rmSync } from "node:fs";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
@@ -466,6 +474,14 @@ export default function (pi: ExtensionAPI): void {
       mutationRegistry.recordIssueMutation(params.issue, targetLabel);
       if (current) {
         mutationRegistry.recordIssueMutation(params.issue, current.label);
+      }
+      // B4: refresh the AFK widget after any successful mutation.
+      // No-op if AFK isn't active. Best-effort — a render failure here
+      // must not surface as a tool failure.
+      try {
+        refreshAfkWidget();
+      } catch {
+        /* swallow */
       }
 
       const reasonTail = params.reason ? ` (${params.reason})` : "";
@@ -899,6 +915,77 @@ export default function (pi: ExtensionAPI): void {
         content,
         display: true,
       });
+    },
+  });
+
+  // ---------- B4: AFK state, stub loop, status widget ----------
+  const afkState: AfkState = createAfkState(makeStubTicker());
+  // Latest poll snapshot — wired by B9 once the poller subscribes here.
+  let latestSnapshot: Snapshot | null = null;
+  // Active ctx for the widget sink. The most recent /flow-afk invocation
+  // "owns" the widget; mutations refresh against that ctx. If no ctx is
+  // tracked yet, refresh is a no-op (the next command invocation will
+  // re-arm). This is a stub-grade ownership model — B5/B8 will revisit.
+  let widgetCtx: { ui: { setWidget(k: string, lines: string[]): void } } | null = null;
+
+  function refreshAfkWidget() {
+    if (!afkState.isActive() || !widgetCtx) return;
+    let profile: Profile | null = null;
+    try {
+      profile = readProfile(process.cwd());
+    } catch {
+      // Profile not readable — render the AFK-paused-style banner.
+    }
+    const labels = profile
+      ? {
+          tracking: profile.labels.state.tracking,
+          needsAcceptance: profile.labels.state.needs_acceptance,
+          reviewHuman: profile.labels.review.human,
+        }
+      : { tracking: "tracking", needsAcceptance: "needs-acceptance", reviewHuman: "review:human" };
+    const counts = deriveCounts({
+      snapshot: latestSnapshot,
+      labels,
+      nextAssignable: null, // wired in B8
+      idleMinutes: null,
+    });
+    const lines = renderStatusWidget({
+      afkActive: true,
+      counts,
+    });
+    widgetCtx.ui.setWidget("flow", lines);
+  }
+
+  pi.registerCommand("flow-afk", {
+    description: "Start AFK mode — orchestrator loop + poller heartbeat (B-track stub).",
+    handler: async (_args, ctx) => {
+      if (afkState.isActive()) {
+        ctx.ui.notify("AFK already active. /flow-afk-stop to halt.", "info");
+        return;
+      }
+      afkState.setActive(true);
+      afkState.ticker.start();
+      widgetCtx = ctx as unknown as typeof widgetCtx;
+      refreshAfkWidget();
+      ctx.ui.notify(
+        "AFK mode on. Stub loop logging ticks; real loop body lands in B8.",
+        "info",
+      );
+    },
+  });
+
+  pi.registerCommand("flow-afk-stop", {
+    description: "Stop AFK mode. Leaves flow state intact.",
+    handler: async (_args, ctx) => {
+      if (!afkState.isActive()) {
+        ctx.ui.notify("AFK is already off.", "info");
+        return;
+      }
+      afkState.setActive(false);
+      afkState.ticker.stop();
+      ctx.ui.setWidget("flow", []);
+      widgetCtx = null;
+      ctx.ui.notify("AFK mode off.", "info");
     },
   });
 }
