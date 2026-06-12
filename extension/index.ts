@@ -80,6 +80,10 @@ import {
   type BuildRealDepsOpts,
 } from "./afk-wiring.ts";
 import {
+  wireAutoCompact,
+  resolveCompactThreshold,
+} from "./afk-compaction.ts";
+import {
   createIssueAutocompleteProvider,
   createIssueCache,
   collectFlowLabels,
@@ -1309,6 +1313,33 @@ export default function (pi: ExtensionAPI): void {
         current as never,
         () => issueCache!.get(),
       )) as never);
+  });
+
+  // ---------- B11: auto-compact on token threshold ----------
+  wireAutoCompact({
+    pi: pi as Parameters<typeof wireAutoCompact>[0]["pi"],
+    getAfkActive: () => afkState.isActive(),
+    getTrackBranch: () => realDeps?.trackBranch ?? null,
+    getIterMap: () => iterMap,
+    getRecentMutationIssues: () => {
+      // Best-effort: look up profile for any recent mutation issue numbers.
+      // MutationRegistry doesn't expose a list, so we return empty.
+      return [];
+    },
+    getThreshold: () => {
+      try {
+        const profile = readProfile(process.cwd());
+        return resolveCompactThreshold(profile.orchestrator_compact_threshold_tokens);
+      } catch {
+        return 100_000;
+      }
+    },
+    onCompactError: (_err) => {
+      // On compaction error, apply review:human on any in-flight issue
+      // so it doesn't get lost. Best-effort.
+      // (realDeps is available; we don't have the current issue number
+      // here — a future slice could thread it through.)
+    },
   });
 
   // ---------- B9: poller setup + diff reaction ----------
