@@ -1,44 +1,50 @@
 /**
  * pi-flow extension — entry point.
  *
- * Current state (per Track A progress):
- * - A1: extension skeleton + tracer `/flow-status` (label hardcoded then)
- * - A3: profile reader + `flow_profile_read` tool; `/flow-status` is now
- *   profile-driven (reads `labels.state.ready_for_agent` instead of a constant).
+ * Progress (Track A):
+ * - A1: skeleton + tracer `/flow-status` (hardcoded label)
+ * - A3: profile reader + `flow_profile_read` tool; `/flow-status` profile-driven
+ * - A4: `gh.ts` wrapper + `flow_issues_query` tool; `/flow-status` now uses
+ *   `gh.listIssues` (no more inline `pi.exec` for `gh`).
  *
- * Naming convention (locked in at A1): `/flow-<verb>` for non-LLM commands,
- * leaving the bare `/flow` for the skill's natural-language entry.
+ * Naming convention: `/flow-<verb>` for non-LLM commands; bare `/flow` is the skill.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { readProfile, profilePathFor, ProfileError } from "./profile.ts";
+import { createGh, type GhIssueRef, GhError } from "./gh.ts";
 
-type GhIssue = {
-  number: number;
-  title: string;
-  labels: Array<{ name: string }>;
-};
+/** State-axis keys understood by `flow_issues_query`. Matches `Profile.labels.state`. */
+const STATE_KEYS = [
+  "needs_triage",
+  "needs_info",
+  "needs_grilling",
+  "needs_slicing",
+  "needs_plan_review",
+  "tracking",
+  "ready_for_agent",
+  "ready_for_human",
+  "needs_acceptance",
+  "wontfix",
+] as const;
 
-function formatStatusSummary(label: string, issues: GhIssue[]): string {
-  if (issues.length === 0) {
-    return `No ${label} issues.`;
-  }
-  const lines = issues.map((i) => {
-    const labels = i.labels.map((l) => l.name).join(",");
-    return `#${String(i.number).padStart(3)}  ${i.title}  [${labels}]`;
-  });
-  return [`${issues.length} ${label} issue(s):`, ...lines].join("\n");
+function formatIssueLines(issues: GhIssueRef[]): string[] {
+  return issues.map(
+    (i) =>
+      `#${String(i.number).padStart(3)}  ${i.title}  [${i.labels.join(",")}]`,
+  );
 }
 
 function profileErrorHint(err: unknown): string {
-  if (err instanceof ProfileError) {
-    return err.message;
-  }
+  if (err instanceof ProfileError) return err.message;
   return err instanceof Error ? err.message : String(err);
 }
 
 export default function (pi: ExtensionAPI): void {
+  const gh = createGh(pi);
+
   // ---------- Tool: flow_profile_read ----------
   pi.registerTool({
     name: "flow_profile_read",
@@ -70,6 +76,50 @@ export default function (pi: ExtensionAPI): void {
     },
   });
 
+  // ---------- Tool: flow_issues_query ----------
+  pi.registerTool({
+    name: "flow_issues_query",
+    label: "Query flow issues",
+    description:
+      "List open GitHub issues currently labelled with a given flow state. The `state` parameter is a state-axis key (e.g. `needs_acceptance`); it is resolved to the actual label name via the profile, so renamed labels still work. Use `extra` for raw additional `gh issue list` flags (e.g. `[\"--assignee\", \"@me\"]`).",
+    promptSnippet:
+      "List issues currently in a given flow state (`needs_acceptance`, `ready_for_agent`, ...).",
+    promptGuidelines: [
+      "Use flow_issues_query for any flow-state query; do not shell out to gh directly.",
+    ],
+    parameters: Type.Object({
+      state: StringEnum(STATE_KEYS),
+      extra: Type.Optional(Type.Array(Type.String())),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const profile = readProfile(ctx.cwd);
+      const stateKey = params.state as (typeof STATE_KEYS)[number];
+      const label = profile.labels.state[stateKey];
+      if (!label) {
+        throw new Error(
+          `Unknown state key '${params.state}'. Valid keys: ${STATE_KEYS.join(", ")}`,
+        );
+      }
+      const issues = await gh.listIssues({
+        labels: [label],
+        state: "open",
+        extra: params.extra,
+        signal,
+      });
+      const summary =
+        issues.length === 0
+          ? `No open issues labelled ${label}.`
+          : [
+              `${issues.length} open issue(s) labelled ${label}:`,
+              ...formatIssueLines(issues),
+            ].join("\n");
+      return {
+        content: [{ type: "text", text: summary }],
+        details: { stateKey, label, count: issues.length, issues },
+      };
+    },
+  });
+
   // ---------- Command: /flow-status ----------
   pi.registerCommand("flow-status", {
     description: "List issues currently labelled `ready_for_agent` (profile-resolved)",
@@ -86,52 +136,33 @@ export default function (pi: ExtensionAPI): void {
         return;
       }
 
-      let result: Awaited<ReturnType<typeof pi.exec>>;
+      let issues: GhIssueRef[];
       try {
-        result = await pi.exec(
-          "gh",
-          [
-            "issue",
-            "list",
-            "-l",
-            readyLabel,
-            "--json",
-            "number,title,labels",
-            "--limit",
-            "50",
-          ],
-          { signal: ctx.signal },
-        );
+        issues = await gh.listIssues({
+          labels: [readyLabel],
+          state: "open",
+          limit: 50,
+          signal: ctx.signal,
+        });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(
-          `gh failed to start: ${msg}. Is gh installed and on PATH?`,
-          "error",
-        );
+        const msg =
+          err instanceof GhError
+            ? `${err.message}\nHint: check 'gh auth status'.`
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        ctx.ui.notify(msg, "error");
         return;
       }
 
-      if (result.code !== 0) {
-        const stderr = (result.stderr ?? "").trim();
-        ctx.ui.notify(
-          `gh exited ${result.code}. ${stderr}\nHint: check 'gh auth status'.`,
-          "error",
-        );
-        return;
-      }
-
-      let issues: GhIssue[];
-      try {
-        issues = JSON.parse(result.stdout);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`Could not parse gh JSON output: ${msg}`, "error");
-        return;
-      }
+      const content =
+        issues.length === 0
+          ? `No ${readyLabel} issues.`
+          : [`${issues.length} ${readyLabel} issue(s):`, ...formatIssueLines(issues)].join("\n");
 
       pi.sendMessage({
         customType: "flow-status",
-        content: formatStatusSummary(readyLabel, issues),
+        content,
         display: true,
       });
     },
