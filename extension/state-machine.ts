@@ -34,6 +34,35 @@ export const STATES = [
 export type State = (typeof STATES)[number];
 
 /**
+ * Profile state-keys (YAML-friendly underscores) are isomorphic to canonical
+ * State names (hyphens). YAML keys can't easily be hyphenated without
+ * quoting, so we keep the two forms and translate at the seam.
+ */
+export const STATE_KEYS = [
+  "needs_triage",
+  "needs_info",
+  "needs_grilling",
+  "needs_slicing",
+  "needs_plan_review",
+  "tracking",
+  "ready_for_agent",
+  "ready_for_human",
+  "needs_acceptance",
+  "wontfix",
+] as const;
+
+export type StateKey = (typeof STATE_KEYS)[number];
+
+export function stateForKey(key: string): State | null {
+  const s = key.replace(/_/g, "-");
+  return (STATES as readonly string[]).includes(s) ? (s as State) : null;
+}
+
+export function keyForState(state: State): StateKey {
+  return state.replace(/-/g, "_") as StateKey;
+}
+
+/**
  * Kind of state — informs the AFK loop's blocking logic and surfaces in
  * the status widget. Names chosen to be cheap to scan:
  *

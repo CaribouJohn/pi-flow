@@ -2,10 +2,11 @@
  * pi-flow extension — entry point.
  *
  * Progress (Track A):
- * - A1: skeleton + tracer `/flow-status` (hardcoded label)
- * - A3: profile reader + `flow_profile_read` tool; `/flow-status` profile-driven
- * - A4: `gh.ts` wrapper + `flow_issues_query` tool; `/flow-status` now uses
- *   `gh.listIssues` (no more inline `pi.exec` for `gh`).
+ *  - A1: skeleton + tracer `/flow-status`
+ *  - A3: profile reader + `flow_profile_read`
+ *  - A4: gh.ts wrapper + `flow_issues_query`
+ *  - A5/A6: state machine data + validator (pure)
+ *  - A7: `flow_set_state` — atomic label swap + mutation token
  *
  * Naming convention: `/flow-<verb>` for non-LLM commands; bare `/flow` is the skill.
  */
@@ -13,22 +14,27 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { readProfile, profilePathFor, ProfileError } from "./profile.ts";
+import {
+  readProfile,
+  profilePathFor,
+  ProfileError,
+  labelForStateKey,
+  stateKeyForLabel,
+  type Profile,
+} from "./profile.ts";
 import { createGh, type GhIssueRef, GhError } from "./gh.ts";
-
-/** State-axis keys understood by `flow_issues_query`. Matches `Profile.labels.state`. */
-const STATE_KEYS = [
-  "needs_triage",
-  "needs_info",
-  "needs_grilling",
-  "needs_slicing",
-  "needs_plan_review",
-  "tracking",
-  "ready_for_agent",
-  "ready_for_human",
-  "needs_acceptance",
-  "wontfix",
-] as const;
+import {
+  STATE_KEYS,
+  stateForKey,
+  keyForState,
+  type State,
+  type StateKey,
+} from "./state-machine.ts";
+import { validateTransition } from "./state-validator.ts";
+import {
+  createMutationRegistry,
+  type MutationRegistry,
+} from "./mutation-registry.ts";
 
 function formatIssueLines(issues: GhIssueRef[]): string[] {
   return issues.map(
@@ -42,8 +48,43 @@ function profileErrorHint(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Find the (unique) flow-state label currently on an issue.
+ * Returns `{key, label, state}` if exactly one; null if none; throws if
+ * more than one (which means a label was added without a paired removal —
+ * a data-integrity bug worth surfacing rather than papering over).
+ */
+function currentStateOnIssue(
+  profile: Profile,
+  issue: GhIssueRef,
+): { key: StateKey; label: string; state: State } | null {
+  const stateLabelValues = new Set(Object.values(profile.labels.state));
+  const present = issue.labels.filter((l) => stateLabelValues.has(l));
+  if (present.length === 0) return null;
+  if (present.length > 1) {
+    throw new Error(
+      `Issue #${issue.number} has ${present.length} flow-state labels at once: ${present.join(", ")}. Repair by removing all but one before retrying.`,
+    );
+  }
+  const label = present[0]!;
+  const key = stateKeyForLabel(profile, label);
+  if (!key) {
+    // Can't happen given the filter above, but the type system doesn't know.
+    throw new Error(`Internal: label ${label} on #${issue.number} unmapped`);
+  }
+  const state = stateForKey(key);
+  if (!state) {
+    throw new Error(`Internal: state-key ${key} on #${issue.number} unmapped`);
+  }
+  return { key: key as StateKey, label, state };
+}
+
 export default function (pi: ExtensionAPI): void {
   const gh = createGh(pi);
+  const mutationRegistry: MutationRegistry = createMutationRegistry();
+  // mutationRegistry is closure-shared with future slices added to this
+  // default-export (AFK loop, status widget). Do not export across module
+  // boundaries unless that need actually arrives.
 
   // ---------- Tool: flow_profile_read ----------
   pi.registerTool({
@@ -93,8 +134,7 @@ export default function (pi: ExtensionAPI): void {
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       const profile = readProfile(ctx.cwd);
-      const stateKey = params.state as (typeof STATE_KEYS)[number];
-      const label = profile.labels.state[stateKey];
+      const label = labelForStateKey(profile, params.state);
       if (!label) {
         throw new Error(
           `Unknown state key '${params.state}'. Valid keys: ${STATE_KEYS.join(", ")}`,
@@ -115,7 +155,102 @@ export default function (pi: ExtensionAPI): void {
             ].join("\n");
       return {
         content: [{ type: "text", text: summary }],
-        details: { stateKey, label, count: issues.length, issues },
+        details: { stateKey: params.state, label, count: issues.length, issues },
+      };
+    },
+  });
+
+  // ---------- Tool: flow_set_state ----------
+  pi.registerTool({
+    name: "flow_set_state",
+    label: "Set flow state",
+    description:
+      "Atomically move an issue to a new flow state. Reads the issue's current state label, validates the transition against the v1 state machine (refusing illegal moves with the legal targets listed in the error), performs the label swap in a single gh API call, and records a mutation token so the AFK poller treats the change as ours. Returns a brief result; no comment is posted (use flow_comment for that).",
+    promptSnippet:
+      "Move an issue to a new flow state (validates the transition, atomic label swap, records a mutation token).",
+    promptGuidelines: [
+      "Call flow_set_state for every state move; never edit labels directly.",
+      "If the call fails with 'Illegal transition', read the listed legal targets and either pick a legal arrow or escalate to needs_info / ready_for_human.",
+    ],
+    parameters: Type.Object({
+      issue: Type.Integer({ minimum: 1 }),
+      to: StringEnum(STATE_KEYS),
+      reason: Type.Optional(Type.String()),
+    }),
+    async execute(_id, params, signal, _onUpdate, ctx) {
+      const profile = readProfile(ctx.cwd);
+
+      const targetLabel = labelForStateKey(profile, params.to);
+      if (!targetLabel) {
+        throw new Error(
+          `Unknown target state '${params.to}'. Valid keys: ${STATE_KEYS.join(", ")}`,
+        );
+      }
+      const targetState = stateForKey(params.to);
+      if (!targetState) {
+        throw new Error(`Unknown target state '${params.to}'`);
+      }
+
+      const issue = await gh.viewIssue(params.issue, { signal });
+      const current = currentStateOnIssue(profile, issue);
+      const fromState: State | null = current?.state ?? null;
+
+      // Validator wants concrete from-state. If the issue has none, we
+      // permit any agent-pickable initial move (mirrors the "newly filed"
+      // case where labelling is the first state assignment).
+      let result: ReturnType<typeof validateTransition>;
+      if (fromState == null) {
+        result = { ok: true, kind: "transition" };
+      } else {
+        result = validateTransition(fromState, targetState);
+      }
+
+      if (!result.ok) {
+        throw new Error(result.reason);
+      }
+
+      if (result.kind === "noop") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `noop: #${params.issue} already in '${targetState}'.`,
+            },
+          ],
+          details: {
+            issue: params.issue,
+            from: fromState,
+            to: targetState,
+            kind: "noop" as const,
+          },
+        };
+      }
+
+      await gh.editIssueLabels(params.issue, {
+        add: [targetLabel],
+        remove: current ? [current.label] : [],
+        signal,
+      });
+      const token = mutationRegistry.record(params.issue, targetState);
+
+      const reasonTail = params.reason ? ` (${params.reason})` : "";
+      return {
+        content: [
+          {
+            type: "text",
+            text: `#${params.issue}: ${fromState ?? "(no state)"} → ${targetState}${reasonTail}.`,
+          },
+        ],
+        details: {
+          issue: params.issue,
+          from: fromState,
+          fromKey: current ? current.key : null,
+          to: targetState,
+          toKey: keyForState(targetState),
+          toLabel: targetLabel,
+          fromLabel: current?.label ?? null,
+          tokenExpiresAt: token.expiresAt,
+        },
       };
     },
   });
