@@ -460,6 +460,13 @@ export default function (pi: ExtensionAPI): void {
         signal,
       });
       const token = mutationRegistry.record(params.issue, targetState);
+      // Additive issue-label log for the B-track poller. Record both
+      // directions so the poller suppresses on either label-added or
+      // label-removed diffs.
+      mutationRegistry.recordIssueMutation(params.issue, targetLabel);
+      if (current) {
+        mutationRegistry.recordIssueMutation(params.issue, current.label);
+      }
 
       const reasonTail = params.reason ? ` (${params.reason})` : "";
       return {
