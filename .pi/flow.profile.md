@@ -11,7 +11,7 @@ track_branch_prefix: track/
 # Verify gate: the deterministic check every slice must pass before review.
 # Default is a no-op that always passes; a later slice will swap this to `bun test`
 # once there's something to test.
-verify_gate: echo "verify-gate: default-pass (not yet implemented)"
+verify_gate: 'echo "verify-gate: default-pass (not yet implemented)"'
 
 # In-situ harness: not applicable for this repo (no UI).
 in_situ_harness: ""

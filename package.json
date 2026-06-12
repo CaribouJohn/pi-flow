@@ -1,0 +1,26 @@
+{
+  "name": "pi-flow",
+  "version": "0.1.0",
+  "description": "pi extension implementing an opinionated AFK delivery loop on top of GitHub Issues",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CaribouJohn/pi-flow.git"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "main": "extension/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  }
+}
