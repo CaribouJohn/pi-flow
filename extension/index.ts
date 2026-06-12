@@ -55,6 +55,10 @@ import {
   makeStubTicker,
   renderStatusWidget,
   deriveCounts,
+  replayAfkEntries,
+  deriveStartupWidget,
+  AFK_ENTRY_TYPE,
+  type AfkEntry,
   type AfkState,
 } from "./afk-state.ts";
 import type { Snapshot } from "./poller.ts";
@@ -967,6 +971,8 @@ export default function (pi: ExtensionAPI): void {
       afkState.ticker.start();
       widgetCtx = ctx as unknown as typeof widgetCtx;
       refreshAfkWidget();
+      const entry: AfkEntry = { afkActive: true, ts: Date.now() };
+      pi.appendEntry(AFK_ENTRY_TYPE, entry);
       ctx.ui.notify(
         "AFK mode on. Stub loop logging ticks; real loop body lands in B8.",
         "info",
@@ -985,7 +991,31 @@ export default function (pi: ExtensionAPI): void {
       afkState.ticker.stop();
       ctx.ui.setWidget("flow", []);
       widgetCtx = null;
+      const entry: AfkEntry = { afkActive: false, ts: Date.now() };
+      pi.appendEntry(AFK_ENTRY_TYPE, entry);
       ctx.ui.notify("AFK mode off.", "info");
     },
+  });
+
+  // B5: on session start, replay AFK entries. Do NOT auto-resume — if
+  // the last entry was "on", surface the paused banner so the human can
+  // explicitly resume with /flow-afk.
+  pi.on("session_start", async (_event, ctx) => {
+    const latest = replayAfkEntries(ctx.sessionManager.getEntries() as never);
+    const startup = deriveStartupWidget(latest);
+    if (startup.afkPaused) {
+      const lines = renderStatusWidget({
+        afkActive: false,
+        afkPaused: true,
+        counts: {
+          tracksLive: 0,
+          needsAcceptance: 0,
+          reviewHuman: 0,
+          nextAssignable: null,
+          idleMinutes: null,
+        },
+      });
+      ctx.ui.setWidget("flow", lines);
+    }
   });
 }

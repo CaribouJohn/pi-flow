@@ -160,3 +160,58 @@ export function createAfkState(ticker: StubTicker): AfkState {
     ticker,
   };
 }
+
+// --- B5: persistence replay ---
+
+/** Shape of the entry we append on every AFK toggle. */
+export type AfkEntry = {
+  afkActive: boolean;
+  ts: number;
+  /** Future-proofing: the tracks this AFK session was scoped to. Empty
+   *  array = all open tracks (current behaviour). */
+  tracks?: number[];
+};
+
+/** Narrow view of `ctx.sessionManager.getEntries()` we actually read. */
+export type ReplayEntry = {
+  type: string;
+  customType?: string;
+  data?: unknown;
+};
+
+export const AFK_ENTRY_TYPE = "flow-afk";
+
+/**
+ * Walk the session entries (oldest → newest, as `getEntries` returns them)
+ * and return the most recent AFK entry's payload, or `null` if none.
+ *
+ * Pure: no I/O. The caller supplies the entries; the smoke passes a
+ * canned array.
+ */
+export function replayAfkEntries(entries: ReplayEntry[]): AfkEntry | null {
+  let latest: AfkEntry | null = null;
+  for (const e of entries) {
+    if (e.type !== "custom" || e.customType !== AFK_ENTRY_TYPE) continue;
+    const d = e.data;
+    if (
+      d &&
+      typeof d === "object" &&
+      "afkActive" in d &&
+      typeof (d as { afkActive: unknown }).afkActive === "boolean"
+    ) {
+      latest = d as AfkEntry;
+    }
+  }
+  return latest;
+}
+
+/**
+ * Decide what the widget should render on `session_start`. Per
+ * DESIGN.md §Trigger: do NOT auto-resume across pi restarts — if the
+ * last entry was "on", surface the paused banner instead.
+ */
+export function deriveStartupWidget(
+  latest: AfkEntry | null,
+): { afkPaused: boolean } {
+  return { afkPaused: latest?.afkActive === true };
+}

@@ -234,5 +234,51 @@ function check(label: string, ok: boolean, detail?: string) {
   check("setActive(false) flips back", s.isActive() === false);
 }
 
+// --- B5: persistence replay ---
+{
+  const { replayAfkEntries, deriveStartupWidget } = await import("./afk-state.ts");
+
+  // no entries → null → not paused
+  check(
+    "replayAfkEntries: no entries returns null",
+    replayAfkEntries([]) === null,
+  );
+  check(
+    "deriveStartupWidget: null → not paused",
+    deriveStartupWidget(null).afkPaused === false,
+  );
+
+  // ignores non-custom and other customType
+  check(
+    "replay ignores non-flow-afk entries",
+    replayAfkEntries([
+      { type: "message" },
+      { type: "custom", customType: "some-other", data: { afkActive: true } },
+    ]) === null,
+  );
+
+  // picks the LATEST flow-afk entry
+  const r1 = replayAfkEntries([
+    { type: "custom", customType: "flow-afk", data: { afkActive: true, ts: 1 } },
+    { type: "custom", customType: "flow-afk", data: { afkActive: false, ts: 2 } },
+  ]);
+  check("replay returns the latest entry", r1?.afkActive === false);
+
+  const r2 = replayAfkEntries([
+    { type: "custom", customType: "flow-afk", data: { afkActive: false, ts: 1 } },
+    { type: "custom", customType: "flow-afk", data: { afkActive: true, ts: 2 } },
+  ]);
+  check("latest=true → paused", deriveStartupWidget(r2).afkPaused === true);
+  check("latest=false → not paused", deriveStartupWidget(r1).afkPaused === false);
+
+  // malformed data is skipped (no afkActive boolean)
+  const r3 = replayAfkEntries([
+    { type: "custom", customType: "flow-afk", data: { afkActive: "yes" } },
+    { type: "custom", customType: "flow-afk", data: null },
+    { type: "custom", customType: "flow-afk" }, // no data
+  ]);
+  check("malformed entries don't crash and are ignored", r3 === null);
+}
+
 console.log(`\n${failed === 0 ? "PASS" : `FAIL — ${failed} check(s) failed`}`);
 process.exit(failed === 0 ? 0 : 1);
