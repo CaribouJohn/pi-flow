@@ -42,8 +42,8 @@ export function run(argv: string[]): CliResult {
   if (command !== "run") {
     return { code: 2, message: USAGE };
   }
-  if (track === undefined || Number.isNaN(track)) {
-    return { code: 2, message: `error: --track <n> is required\n${USAGE}` };
+  if (track === undefined || !Number.isInteger(track) || track < 1) {
+    return { code: 2, message: `error: --track <n> must be a positive integer\n${USAGE}` };
   }
 
   return {
