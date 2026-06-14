@@ -1,0 +1,14 @@
+# Enforce LF in the working tree for all text files, regardless of the
+# contributor's core.autocrlf setting. Without this, Git checks files out as
+# CRLF on Windows (autocrlf=true) and Biome's LF formatter fails the verify
+# gate — making the gate non-deterministic across checkouts.
+* text=auto eol=lf
+
+# Binary assets — never normalize.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
