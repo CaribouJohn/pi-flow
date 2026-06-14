@@ -59,4 +59,24 @@ describe("FileCredentialStore", () => {
     expect(await store.get("anthropic")).toBeNull();
     expect(await readFile(path, "utf8")).toBe(body); // secret preserved, not dropped
   });
+
+  test("set refuses to overwrite a too-new file (preserves its keys)", async () => {
+    const path = await tempPath();
+    const body = JSON.stringify({
+      schemaVersion: 999,
+      keys: { anthropic: "v2-secret", openai: "v2" },
+    });
+    await writeFile(path, body, "utf8");
+    const store = new FileCredentialStore(path);
+    await expect(store.set("anthropic", "downgraded")).rejects.toThrow(/unreadable/);
+    expect(await readFile(path, "utf8")).toBe(body); // not downgraded, keys intact
+  });
+
+  test("set refuses to overwrite a malformed file", async () => {
+    const path = await tempPath();
+    await writeFile(path, "{ not json", "utf8");
+    const store = new FileCredentialStore(path);
+    await expect(store.set("anthropic", "x")).rejects.toThrow(/unreadable/);
+    expect(await readFile(path, "utf8")).toBe("{ not json");
+  });
 });

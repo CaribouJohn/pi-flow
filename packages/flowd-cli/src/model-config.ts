@@ -15,6 +15,8 @@ export interface RoleModelConfig {
   review: ModelId;
 }
 
+// Exact match: provider and model id are case-sensitive identifiers (as the
+// provider SDKs treat them), so no normalization is applied.
 export function sameModel(a: ModelId, b: ModelId): boolean {
   return a.provider === b.provider && a.id === b.id;
 }

@@ -29,56 +29,79 @@ interface CredentialsFile {
   readonly keys: Record<string, string>;
 }
 
+/**
+ * The three states `load` can be in. Distinguishing *missing* from *unreadable*
+ * is what lets writes preserve secrets: it is safe to create a fresh file when
+ * none exists, but overwriting a too-new/malformed file would silently drop the
+ * keys it holds — so writes refuse in that case.
+ */
+type LoadState =
+  | { status: "missing" }
+  | { status: "ok"; keys: Record<string, string> }
+  | { status: "unreadable"; reason: string };
+
 export class FileCredentialStore implements CredentialStore {
   constructor(private readonly path: string) {}
 
   async get(provider: string): Promise<string | null> {
-    const keys = await this.load();
-    const key = keys[provider];
+    const state = await this.load();
+    if (state.status !== "ok") return null;
+    const key = state.keys[provider];
     return typeof key === "string" && key.length > 0 ? key : null;
   }
 
   async set(provider: string, key: string): Promise<void> {
-    const keys = await this.load();
+    const keys = await this.readableKeysForWrite("set");
     keys[provider] = key;
     await this.save(keys);
   }
 
   async clear(provider: string): Promise<void> {
-    const keys = await this.load();
+    const keys = await this.readableKeysForWrite("clear");
     if (!(provider in keys)) return;
     const rest: Record<string, string> = {};
     for (const [k, v] of Object.entries(keys)) if (k !== provider) rest[k] = v;
     await this.save(rest);
   }
 
-  private async load(): Promise<Record<string, string>> {
+  /**
+   * Current keys for a mutating call. Throws on an unreadable file rather than
+   * overwriting it — never silently downgrade/drop a user's existing secrets.
+   */
+  private async readableKeysForWrite(op: string): Promise<Record<string, string>> {
+    const state = await this.load();
+    if (state.status === "unreadable") {
+      throw new Error(
+        `[credentials] refusing to ${op} — ${this.path} is unreadable: ${state.reason}`,
+      );
+    }
+    return state.status === "ok" ? { ...state.keys } : {};
+  }
+
+  private async load(): Promise<LoadState> {
     let raw: string;
     try {
       raw = await readFile(this.path, "utf8");
     } catch (err) {
-      if (isFileNotFound(err)) return {};
-      console.warn(`[credentials] read failed for ${this.path}:`, err);
-      return {};
+      if (isFileNotFound(err)) return { status: "missing" };
+      return { status: "unreadable", reason: `read failed: ${String(err)}` };
     }
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw) as unknown;
-    } catch (err) {
-      console.warn(`[credentials] malformed JSON at ${this.path}:`, err);
-      return {};
+    } catch {
+      return { status: "unreadable", reason: "malformed JSON" };
     }
 
     const version = readSchemaVersion(parsed);
     if (version > CREDENTIAL_SCHEMA_VERSION) {
-      // Preserve user secrets — read as empty, do NOT delete the newer file.
-      console.warn(
-        `[credentials] ${this.path} is too new (schemaVersion ${version} > ${CREDENTIAL_SCHEMA_VERSION}); ignoring, not deleting`,
-      );
-      return {};
+      return {
+        status: "unreadable",
+        reason: `schemaVersion ${version} > ${CREDENTIAL_SCHEMA_VERSION} (written by a newer build)`,
+      };
     }
-    return extractKeys(parsed);
+    return { status: "ok", keys: extractKeys(parsed) };
   }
 
   private async save(keys: Record<string, string>): Promise<void> {

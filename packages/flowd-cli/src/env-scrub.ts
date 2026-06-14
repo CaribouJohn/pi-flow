@@ -4,13 +4,17 @@
  * Ported from Hiss (ADR-0029 §4): Pi reads keys from the env by default, so we
  * scrub them and supply the key explicitly per session.
  */
+// Common provider key env vars. Not exhaustive — extend as flowd routes to more
+// providers; callers can also pass a custom `names` list to `scrubProviderEnvKeys`.
 export const PROVIDER_ENV_KEYS = [
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
+  "AZURE_OPENAI_API_KEY",
   "GEMINI_API_KEY",
   "GOOGLE_API_KEY",
   "GOOGLE_GENERATIVE_AI_API_KEY",
   "MISTRAL_API_KEY",
+  "COHERE_API_KEY",
   "GROQ_API_KEY",
   "DEEPSEEK_API_KEY",
   "XAI_API_KEY",
