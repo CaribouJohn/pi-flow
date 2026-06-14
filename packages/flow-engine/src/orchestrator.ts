@@ -8,7 +8,7 @@
  * (SPEC §8.8): a duplicate run over a finished world is a no-op.
  */
 import { isAssignable } from "./derive.ts";
-import type { Slice, World } from "./domain.ts";
+import type { Slice, Track, World } from "./domain.ts";
 import type { OrchestratorPorts } from "./ports.ts";
 
 export type Action =
@@ -23,7 +23,14 @@ export type Action =
 type ExecutableAction = Exclude<Action, { kind: "done" } | { kind: "park" }>;
 
 export interface RunOptions {
-  /** Bounds the changes-requested loop (S6a) and the verify-retry loop (S3). */
+  /**
+   * Maximum number of *review rounds* before a still-rejected slice parks.
+   * After this many REQUEST_CHANGES verdicts the track parks for a human — it
+   * does NOT count re-implements (cap=1 ⇒ one review; a single REQUEST_CHANGES
+   * parks with zero re-implements). Bounds the S6a loop only; the verify gate
+   * (S3) is gated once per implement — the implementer agent owns iterating to
+   * green internally (SPEC §8.7).
+   */
   reviewerIterationCap: number;
   /** Who claims a slice (the assignee = the lock). */
   actor: string;
@@ -66,6 +73,15 @@ export function decide(world: World, reviewerIterationCap: number): Action {
     if (pr === null) return { kind: "implement", sliceId: inFlight.id };
     switch (pr.status) {
       case "open":
+        // S6h — a review:human slice is handed off to the maintainer, never
+        // gated by the agent reviewer (SPEC §5.4 S6h).
+        if (inFlight.review === "human") {
+          return {
+            kind: "park",
+            sliceId: inFlight.id,
+            reason: "awaiting human review (review:human) — S6h handoff",
+          };
+        }
         return { kind: "review", sliceId: inFlight.id };
       case "approved":
         return { kind: "merge", sliceId: inFlight.id };
@@ -100,7 +116,7 @@ export async function runTrack(
   await ports.forge.driftRefresh(track.branch);
 
   for (;;) {
-    const world = await readWorld(ports, trackId);
+    const world = await readWorld(ports, track);
     const action = decide(world, opts.reviewerIterationCap);
 
     if (action.kind === "done") return { steps, outcome: "fixpoint" };
@@ -121,9 +137,8 @@ export async function runTrack(
   }
 }
 
-async function readWorld(ports: OrchestratorPorts, trackId: number): Promise<World> {
-  const track = await ports.tracker.getTrack(trackId);
-  const trackerSlices = await ports.tracker.listSlices(trackId);
+async function readWorld(ports: OrchestratorPorts, track: Track): Promise<World> {
+  const trackerSlices = await ports.tracker.listSlices(track.id);
   const slices: Slice[] = await Promise.all(
     trackerSlices.map(async (ts) => ({
       ...ts,
@@ -154,7 +169,12 @@ async function apply(
 
     case "review": {
       const pr = requirePr(slice, "review");
-      const verdict = await ports.agent.review(agentContext(slice));
+      // The reviewer investigates the slice fresh — it is NOT handed the prior
+      // round's findings (those are implementer context, fed back on S6a).
+      const verdict = await ports.agent.review({
+        sliceId: slice.id,
+        branch: requireBranch(slice, "review"),
+      });
       await ports.forge.recordReviewVerdict(pr.number, verdict);
       await ports.tracker.comment(slice.id, disclaim(opts, reviewComment(verdict)));
       return { detail: `review: ${verdict.decision}` };
@@ -188,23 +208,12 @@ async function implementSlice(
     slice.branch ?? (await ports.forge.createSliceBranch(slice.id, world.track.branch));
   const priorFindings = kind === "reimplement" ? slice.pr?.lastFindings : undefined;
 
-  // S2 + S3 — implement, then the verify gate must go green (bounded retries).
-  let green = false;
-  let lastOutput: string | undefined;
-  for (let attempt = 1; attempt <= opts.reviewerIterationCap && !green; attempt++) {
-    await ports.agent.implement({
-      sliceId: slice.id,
-      branch,
-      priorFindings: attempt === 1 ? priorFindings : undefined,
-    });
-    const gate = await ports.verify.run(slice.id);
-    green = gate.green;
-    lastOutput = gate.output;
-  }
-  if (!green) {
-    return {
-      park: redGate(`verify gate red after ${opts.reviewerIterationCap} attempt(s)`, lastOutput),
-    };
+  // S2 — implement. The agent owns iterating to a green verify gate internally
+  // (SPEC §8.7); the orchestrator gates S3 once and parks on a red result.
+  await ports.agent.implement({ sliceId: slice.id, branch, priorFindings });
+  const gate = await ports.verify.run(slice.id);
+  if (!gate.green) {
+    return { park: redGate("verify gate red", gate.output) };
   }
 
   if (kind === "reimplement" && slice.pr !== null) {
@@ -217,13 +226,14 @@ async function implementSlice(
   return { detail: `PR #${pr.number} opened (base=${pr.base})` };
 }
 
-function agentContext(slice: Slice) {
-  return { sliceId: slice.id, branch: slice.branch ?? "", priorFindings: slice.pr?.lastFindings };
-}
-
 function requirePr(slice: Slice, step: string) {
   if (slice.pr === null) throw new Error(`${step}: slice ${slice.id} has no PR`);
   return slice.pr;
+}
+
+function requireBranch(slice: Slice, step: string): string {
+  if (slice.branch === null) throw new Error(`${step}: slice ${slice.id} has no branch`);
+  return slice.branch;
 }
 
 function reviewComment(verdict: { decision: string; findings: string[] }): string {

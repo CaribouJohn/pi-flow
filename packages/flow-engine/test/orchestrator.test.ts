@@ -44,8 +44,23 @@ describe("runTrack — dependencies", () => {
     expect(result.outcome).toBe("fixpoint");
     expect(flow.slice(10).closed).toBe(true);
     expect(flow.slice(11).closed).toBe(true);
-    // 10 must be claimed/merged before 11 (respect dependencies).
+    // 10 must be worked and merged before 11 is even started (respect dependencies).
+    expect(flow.counts.implement.map((i) => i.sliceId)).toEqual([10, 11]);
     expect(flow.counts.merged).toEqual([10, 11]);
+  });
+});
+
+describe("runTrack — review:human handoff (S6h)", () => {
+  test("a review:human slice parks for the maintainer instead of agent review", async () => {
+    const flow = makeFakeFlow({ slices: [{ id: 10, review: "human" }] });
+
+    const result = await runTrack(flow.ports, 1, OPTS);
+
+    expect(result.outcome).toBe("parked");
+    expect(result.parkedReason).toContain("human review");
+    expect(flow.counts.review).toEqual([]); // never ran the agent reviewer
+    expect(flow.counts.merged).toEqual([]);
+    expect(flow.slice(10).pr?.status).toBe("open"); // PR opened, awaiting the human
   });
 });
 
@@ -69,6 +84,12 @@ describe("runTrack — review changes loop (S6a), bounded", () => {
     // re-implement carried the prior findings back to the implementer.
     const reimplement = flow.counts.implement[1];
     expect(reimplement?.priorFindings).toEqual(["fix the edge case"]);
+    // the verdict + findings are posted to the tracker.
+    expect(
+      flow.comments.some(
+        (c) => c.body.includes("REQUEST_CHANGES") && c.body.includes("fix the edge case"),
+      ),
+    ).toBe(true);
   });
 
   test("persistent REQUEST_CHANGES parks at the cap without merging", async () => {
