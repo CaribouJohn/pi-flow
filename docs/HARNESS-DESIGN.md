@@ -23,7 +23,7 @@ listed in §11 (and folded into `SPEC.md`).
 | 6 | **Engine** | **Pi** (`@earendil-works/pi`) on **Bun** — chosen for multi-LLM openness. Custom tools (git/PR, verify-gate shell, in-situ CDP); the reviewer + in-situ patterns ported to Pi. |
 | 7 | **Model routing** | **per-role × effort**; the **reviewer always on a different model** than the implementer (independent blind spots, not just fresh context). |
 | 8 | **Accept** | **in-app "Accept & merge" as *your* action** (your creds, behind a confirm); the autonomous loop never merges `main`. |
-| 9 | **Identity** | **`flow-bot`** (scoped token — *cannot* merge `main`) for all autonomous work; your creds only for accept. The invariant is enforced by permission scope, not trust. |
+| 9 | **Identity** | **`flow-bot`** (a distinct principal) for all autonomous work; your creds only for accept. The "cannot merge `main`" invariant is enforced by **branch protection on `main`** (excluding `flow-bot`), with `flow-bot` as the excluded principal and "no main-merge code" as defence-in-depth — **not** by token scope (tokens are repo-scoped, not branch-scoped). Multi-repo identity = a **GitHub App**. See **ADR-0038**. |
 | 10 | **Cost** | a **per-track pre-flight estimate that *is* the budget**; meter actual vs estimate and **flag, don't stop** (for now); calibrate estimates from accumulated actuals; hard caps are an opt-in later. |
 
 ---
@@ -132,16 +132,27 @@ machine-driven, with HITL only where the plan-gate routes it or a gate fails (§
 
 ## 5. Identity & credentials
 
-- **`flow-bot`** — a dedicated tracker/forge identity with a **scoped token**: tracker
-  writes + **track-branch** merges only; **no `main`-merge permission**. All autonomous
-  actions run as `flow-bot` (clean attribution: *"flow-bot built it"*).
+The "harness never merges `main`" invariant is enforced by **three layers, structural
+first** (ADR-0038) — **not** by token scope (GitHub token permissions are repo-scoped,
+not branch-scoped, so a token cannot express "may merge `track/*` but not `main`"):
+
+1. **Branch protection on `main` (the structural lever).** Require a PR + a non-author
+   approval, and **restrict push/merge** to the maintainer (a team excluding `flow-bot`).
+   Per-repo config set once; this is what actually makes a `main` merge by the autonomous
+   identity impossible. A repo without it has invariant #1 only by code-convention.
+2. **`flow-bot` — a distinct principal.** All autonomous actions run as `flow-bot` for
+   (a) clean attribution (*"flow-bot built it"*) and (b) being the identity branch
+   protection / CODEOWNERS excludes from `main`. **Multi-repo identity = a GitHub App**
+   (one App, per-repo installation tokens minted automatically); a single-repo deployment
+   may use a bot-account PAT. Tracker writes + track-branch merges are all it ever does.
+3. **No `main`-merge code in the autonomous path (defence-in-depth).** flowd never calls
+   merge against `main`; the backstop, not the primary guarantee.
+
 - **You** — your forge credentials are used **only** for the in-app **Accept & merge**
-  (*"you accepted it"*). The dashboard performs that one action under your identity,
-  behind a confirm.
-- **Storage** — both tokens in the **OS keychain** (the electrobun-skill covers keychain
-  integration), scoped per repo/profile.
-- Net: the autonomous service is **permission-incapable of touching `main`** — SPEC.md
-  invariant #1 is enforced structurally, not by code-convention.
+  (*"you accepted it"*), which branch protection *does* permit on `main`. The dashboard
+  performs that one action under your identity, behind a confirm.
+- **Storage** — credentials in the **OS keychain** (the electrobun-skill covers keychain
+  integration), per repo/profile.
 
 ---
 
@@ -254,7 +265,8 @@ Hard-won in this repo — apply them from day one in the dashboard:
 - **Reviewer invariant strengthened**: `reviewer ≠ implementer` → *and a different
   model*.
 - **Cost estimator** added as a plan-gate output + a build-time meter.
-- **`flow-bot` scoped identity** added; main-merge enforced by permission, not just
-  convention.
+- **`flow-bot` distinct identity** added; main-merge enforced by **branch protection on
+  `main`** (excluding `flow-bot`), not token scope — with "no main-merge code" as
+  defence-in-depth (ADR-0038). Multi-repo identity = a GitHub App.
 - This product tier (dashboard / `flowd` / Pi / adapter / Electrobun) referenced from
   `SPEC.md` §6/§8.
