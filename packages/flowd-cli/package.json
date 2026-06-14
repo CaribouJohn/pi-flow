@@ -1,0 +1,12 @@
+{
+  "name": "@pi-flow/flowd-cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "flowd": "src/index.ts"
+  },
+  "dependencies": {
+    "@pi-flow/flow-engine": "workspace:*"
+  }
+}
