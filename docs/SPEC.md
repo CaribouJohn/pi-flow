@@ -21,8 +21,9 @@ cost/identity policy, the skills, the Electrobun UI) lives in
 > **Design deltas (2026-06-14 grill, see HARNESS-DESIGN.md §1).** Slicing is now
 > **automatic** (T12 below is an agent step, not human — the grill is the only front
 > human step); the reviewer invariant strengthens to **different context *and* model**
-> (§9); a **cost estimator** rides the plan gate; and autonomous actions run as a scoped
-> **`flow-bot`** identity that *cannot* merge `main`.
+> (§9); a **cost estimator** rides the plan gate; and autonomous actions run as a distinct
+> **`flow-bot`** principal barred from `main` by **branch protection** (not token scope;
+> ADR-0038).
 
 ---
 
@@ -342,7 +343,10 @@ guarantee; an optional **in-situ driver** (e.g. CDP); a **notification** channel
 1. **The harness never merges `main`.** It opens/stages the track→main PR and parks for
    the human — even under "just merge it." (Casual delegation does not override the
    codified boundary; re-confirmation specifically about `main` is required, and a
-   conservative harness still defers.)
+   conservative harness still defers.) Enforced **structurally by branch protection on
+   `main`** (excluding the `flow-bot` principal), *not* by token scope — tokens are
+   repo-scoped, not branch-scoped; "no main-merge code" is defence-in-depth only
+   (ADR-0038).
 2. **Reviewer ≠ implementer — different context *and* different model.** Independence
    is the correctness property; a different model gives genuinely independent blind
    spots, not just a fresh context. Enforce both structurally.
