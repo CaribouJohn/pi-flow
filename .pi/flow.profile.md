@@ -3,7 +3,7 @@ tracker: github
 repo: CaribouJohn/pi-flow
 default_branch: main
 track_branch_prefix: track/
-verify_gate: 'echo "verify-gate: default-pass (not yet implemented)"'
+verify_gate: 'bun run verify'
 in_situ_harness: ""
 reviewer_command: /code-review
 reviewer_iteration_cap: 2
