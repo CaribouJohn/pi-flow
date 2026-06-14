@@ -1,0 +1,116 @@
+# Flow lifecycle — machine-readable state model.
+# Companion to SPEC.md. Canonical (portable) names; a profile maps roles -> label
+# strings and supplies tracker/git/verify/branch/reviewer specifics (SPEC.md §6).
+#
+# actors: HUMAN | ORCHESTRATOR | IMPLEMENTER | REVIEWER | PLAN_REVIEWER | SLICER | GRILL | REPORTER | SYSTEM
+# (grill is the only front HUMAN step; SLICER + PLAN_REVIEWER are automatic agents.)
+# Every ORCHESTRATOR/agent tracker-write is prefixed with profile.ai_disclaimer.
+
+version: 1
+
+roles:                      # the single load-bearing state (exactly one per item)
+  needs-triage:     { queue: HUMAN,        terminal: false }
+  needs-info:       { queue: REPORTER,     terminal: false }
+  needs-grilling:   { queue: HUMAN,        terminal: false }
+  needs-slicing:    { queue: HUMAN,        terminal: false }
+  needs-plan-review: { queue: ORCHESTRATOR, terminal: false, escalates_to: HUMAN }
+  tracking:         { queue: ORCHESTRATOR, terminal: false, container: true }
+  ready-for-agent:  { queue: IMPLEMENTER,  terminal: false, requires_axis: [effort] }
+  ready-for-human:  { queue: HUMAN,        terminal: false }
+  needs-acceptance: { queue: HUMAN,        terminal: false, default_review: human }
+  wontfix:          { queue: null,         terminal: true }
+
+axes:
+  category: { values: [bug, enhancement], required: true,  role: signal-only }
+  effort:   { values: [low, medium, high], required_on: [ready-for-agent],
+              note: "high = decompose-smell + plan-gate escalation trigger" }
+  review:   { values: [agent, human], default: agent,
+              note: "who gates a slice merge into the track branch" }
+
+derived_states:             # computed every tick from tracker+git; never hand-labelled
+  blocked:     { from: "open item referenced in THIS item's dependency section" }
+  in-progress: { from: "item has an assignee" }
+  implemented: { from: "a linked PR is open (into the track branch)" }
+  reviewed:    { from: "the linked PR is approved or merged" }
+  assignable:  { from: "role==ready-for-agent AND not blocked AND not in-progress" }
+
+invariants:                 # the harness must never violate these (SPEC.md §9)
+  - harness_never_merges_main          # open/stage the track->main PR; park for HUMAN
+  - reviewer_is_not_implementer_and_different_model  # independence: fresh context AND different model
+  - never_merge_past_a_red_gate        # verify gate OR reviewer gate
+  - never_report_unverified_as_working # in-situ-only checks route to acceptance
+  - decisions_are_labels_states_are_derived
+  - slices_merge_to_track_never_main
+  - respect_dependencies
+  - every_tracker_write_has_ai_disclaimer
+  - claim_before_work                  # set assignee; the only cross-worker lock
+
+transitions:
+  # --- triage (entry) ---
+  - { id: T1,  from: null,            to: needs-triage,      trigger: item_created,           actor: SYSTEM }
+  - { id: T2,  from: needs-triage,    to: needs-info,        trigger: missing_detail,         actor: HUMAN,  effects: [post_questions] }
+  - { id: T3,  from: needs-info,      to: needs-triage,      trigger: reporter_responds,      actor: REPORTER }
+  - { id: T4,  from: needs-triage,    to: wontfix,           trigger: rejected,               actor: HUMAN,  effects: [write_out_of_scope, close] }
+  - { id: T5,  from: needs-triage,    to: needs-grilling,    trigger: big_solution_undecided, actor: HUMAN }
+  - { id: T6,  from: needs-triage,    to: needs-slicing,     trigger: big_understood,         actor: HUMAN }
+  - { id: T7,  from: needs-triage,    to: ready-for-agent,   trigger: small_agent_leaf,       actor: HUMAN,  guard: meets_agent_ready_bar, effects: [set_effort, post_agent_brief] }
+  - { id: T8,  from: needs-triage,    to: ready-for-human,   trigger: small_human_leaf,       actor: HUMAN,  effects: [post_brief] }
+
+  # --- design + decomposition (front bookend, human-owned) ---
+  - { id: T9,  from: needs-grilling,  to: needs-slicing,     trigger: design_artifact_made,   actor: HUMAN,  guard: prd_or_adr_exists }
+  - { id: T10, from: needs-grilling,  to: ready-for-agent,   trigger: shrank_to_leaf,         actor: HUMAN,  guard: meets_agent_ready_bar, effects: [set_effort] }
+  - { id: T11, from: needs-grilling,  to: wontfix,           trigger: killed_by_grill,        actor: HUMAN,  effects: [write_out_of_scope, close] }
+  - { id: T12, from: needs-slicing,   to: needs-plan-review, trigger: prd_ready_auto,         actor: SLICER,   # automatic after the grill
+      effects: [create_child_slices, create_acceptance_item, set_parent_needs_plan_review] }
+
+  # --- plan gate (automatic agent gate / human exception) ---
+  - { id: T13, from: needs-plan-review, to: tracking,          trigger: plan_review_clears,   actor: PLAN_REVIEWER,
+      guard: all_children_meet_bar_and_no_smell,
+      effects: [create_track_branch_off_main, compute_cost_estimate, post_clearance] }   # optional: show_plan_first toggle parks for human approval
+  - { id: T14, from: needs-plan-review, to: needs-plan-review, trigger: smell_detected,       actor: PLAN_REVIEWER,
+      guard: "effort_high_leaf | adr_conflict | irreversible_migration | security_surface", effects: [notify_human_with_risk], escalate: true }
+  - { id: T15, from: needs-plan-review, to: needs-slicing,     trigger: human_re_slices,      actor: HUMAN }
+
+  # --- autonomous middle: the per-slice loop (no human) ---
+  - { id: S0,  scope: track,  step: drift_refresh,  trigger: enter_track,        actor: ORCHESTRATOR, guard: track_branch_exists, effects: [merge_main_into_track] }
+  - { id: S1,  scope: slice,  step: select_claim,   trigger: assignable_exists,  actor: ORCHESTRATOR, guard: "not blocked AND not in-progress", effects: [set_assignee] }   # -> derived in-progress
+  - { id: S2,  scope: slice,  step: implement,      trigger: claimed,            actor: IMPLEMENTER,  effects: [create_slice_branch_off_track, write_code, per_slice_doc_duty] }
+  - { id: S3,  scope: slice,  step: verify_gate,    trigger: code_ready,         actor: IMPLEMENTER,  guard: must_be_green, on_fail: { goto: S2, bounded_retries: true } }
+  - { id: S4,  scope: slice,  step: in_situ_verify, trigger: ui_or_device_bound, actor: IMPLEMENTER,  guard: profile_has_in_situ_harness,
+      note: "if not automatable, DO NOT fake — defer this check to acceptance (A1)" }
+  - { id: S5,  scope: slice,  step: open_pr,        trigger: gate_green,         actor: IMPLEMENTER,  effects: [open_pr_base_track] }   # -> derived implemented
+  - { id: S6,  scope: slice,  step: review_gate,    trigger: pr_open,            actor: REVIEWER,     guard: "review==agent AND reviewer!=implementer",
+      outputs: [APPROVE, REQUEST_CHANGES], effects: [post_verdict] }
+  - { id: S6a, scope: slice,  step: changes,        trigger: REQUEST_CHANGES,    actor: ORCHESTRATOR, effects: [goto_S2_with_review] }
+  - { id: S6h, scope: slice,  step: human_review,   trigger: pr_open,            actor: HUMAN,        guard: "review==human" }
+  - { id: S7,  scope: slice,  step: merge,          trigger: approved,           actor: ORCHESTRATOR, guard: "green_gate AND APPROVE",
+      effects: [merge_slice_pr_into_track, delete_slice_branch, close_slice_item] }   # may unblock dependents
+  - { id: S8,  scope: track,  step: loop,           trigger: more_assignable,    actor: ORCHESTRATOR, effects: [goto_S1] }
+
+  # --- back bookend: acceptance + the main boundary (human-owned) ---
+  - { id: A1,  from: tracking, to: tracking,        trigger: all_slices_closed,  actor: ORCHESTRATOR, guard: only_acceptance_open,
+      effects: [notify_human, post_acceptance_summary, post_in_situ_checklist, stage_track_to_main_pr_unmerged] }   # DOES NOT MERGE
+  - { id: A2,  from: needs-acceptance, to: closed,  trigger: human_accepts,      actor: HUMAN,        guard: maintainer_satisfied,
+      effects: [human_merges_track_to_main, autoclose_parent_and_acceptance] }     # invariant: harness_never_merges_main
+  - { id: A3,  from: needs-acceptance, to: tracking, trigger: human_rejects,     actor: HUMAN,
+      effects: [spawn_corrective_slice_on_track, re_gate, re_present] }            # never reaches main unaccepted
+
+  # --- override ---
+  - { id: OV,  from: any, to: any, trigger: maintainer_override, actor: HUMAN,
+      note: "maintainer may force any role; harness flags unusual transitions and confirms unless durably authorized" }
+
+# human touchpoints (the harness produces a hand-off artifact + notifies, then parks):
+human_queues:
+  - needs-triage        # recommendation
+  - needs-info          # questions to reporter
+  - needs-grilling      # surface + hand to design interview
+  - needs-slicing       # decomposition proposal
+  - plan_gate_escalation# T14 named risk
+  - ready-for-human     # implement-only brief
+  - review_human_slices # S6h
+  - needs-acceptance    # summary + in-situ checklist + staged (unmerged) track->main PR
+
+# what is irreducibly human (SPEC.md §10):
+human_only:
+  [triage_signoff, design_grill, decomposition, plan_gate_escalation_call,
+   ready_for_human_impl, review_human, acceptance_taste, device_bound_in_situ, main_merge]
