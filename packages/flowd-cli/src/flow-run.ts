@@ -86,16 +86,31 @@ async function ensureWorkdir(repo: string, workdir: string): Promise<void> {
 export async function runFlow(config: FlowdConfig, trackId: number): Promise<RunResult> {
   // Use only credential-store keys, never ambient env (ADR-0029).
   scrubProviderEnvKeys();
-  const credentials = new FileCredentialStore(config.credentialsPath);
-  // Resolve the workdir to an absolute path so git (`git -C`) and the agent's
-  // file tools (session cwd) operate on the SAME tree — a relative path can
-  // otherwise let the agent edit one place while the commit checks another.
-  const resolved: FlowdConfig = { ...config, workdir: resolve(config.workdir) };
-  await ensureWorkdir(resolved.repo, resolved.workdir);
+  // Resolve ALL caller paths to absolute up front — against the process's
+  // current cwd (the operator's repo), BEFORE the chdir below — so the
+  // credential file still resolves there.
+  const workdir = resolve(config.workdir);
+  const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  const resolved: FlowdConfig = { ...config, workdir };
+  await ensureWorkdir(resolved.repo, workdir);
   const ports = buildPorts(resolved, credentials);
-  return runTrack(ports, trackId, {
-    reviewerIterationCap: config.reviewerIterationCap,
-    actor: config.actor,
-    aiDisclaimer: config.aiDisclaimer,
-  });
+
+  // Confine the run to the sandbox clone: make the workdir the process cwd for
+  // the agent loop. The agent's coding tools are cwd-bound, but anything that
+  // falls back to `process.cwd()` (a shell side-effect, a stray relative path)
+  // must land in the disposable workdir — NEVER the operator's real checkout
+  // (dogfooding PRD-0003 leaked slice code into the live repo). flowd's own
+  // git/gh/verify calls are already absolute (`git -C`, `--repo`, gate cwd), so
+  // they are unaffected. Restored in `finally` (single-threaded, PRD scope).
+  const originalCwd = process.cwd();
+  process.chdir(workdir);
+  try {
+    return await runTrack(ports, trackId, {
+      reviewerIterationCap: config.reviewerIterationCap,
+      actor: config.actor,
+      aiDisclaimer: config.aiDisclaimer,
+    });
+  } finally {
+    process.chdir(originalCwd);
+  }
 }
