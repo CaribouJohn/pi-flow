@@ -55,6 +55,24 @@ describe("buildPorts", () => {
       implement: { provider: "anthropic", id: "claude-opus-4-8" },
       review: { provider: "openai", id: "gpt-5" },
     },
+    costEstimator: {
+      reworkMultiplier: 1.3,
+      effortTokens: {
+        low: { implement: 1000, review: 500 },
+        medium: { implement: 3000, review: 1500 },
+        high: { implement: 10000, review: 4000 },
+      },
+      modelPrices: {
+        cheap: 3.0,
+        mid: 10.0,
+        strong: 50.0,
+      },
+      effortToModel: {
+        low: { implement: "cheap", review: "strong" },
+        medium: { implement: "mid", review: "strong" },
+        high: { implement: "strong", review: "strong" },
+      },
+    },
   };
 
   test("composes all four engine ports", () => {
