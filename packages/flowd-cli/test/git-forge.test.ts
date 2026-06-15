@@ -129,4 +129,38 @@ describe("GitForgeAdapter — PRs", () => {
     await expect(new GitForgeAdapter(OPTS(run)).mergePr(200)).rejects.toThrow(/default branch/);
     expect(calls.some((c) => c.args[1] === "merge")).toBe(false); // never reached the merge
   });
+
+  test("openPr is idempotent: returns the existing PR without creating one (§8.8)", async () => {
+    const existing = JSON.stringify([{ number: 200, baseRefName: "track/x", comments: [] }]);
+    const { run, calls } = makeFake({ prList: existing });
+    const pr = await new GitForgeAdapter(OPTS(run)).openPr(2, "track/x");
+    expect(pr.number).toBe(200);
+    expect(calls.some((c) => c.args[1] === "create")).toBe(false); // did not create a duplicate
+    expect(calls.some((c) => c.args[0] === "push")).toBe(false); // did not re-push
+  });
+
+  test("openPr throws on an unparseable PR number (e.g. trailing slash)", async () => {
+    const { run } = makeFake({ prCreate: "https://github.com/o/r/pull/200/\n" });
+    await expect(new GitForgeAdapter(OPTS(run)).openPr(2, "track/x")).rejects.toThrow(
+      /could not parse PR number/,
+    );
+  });
+});
+
+describe("GitForgeAdapter — resilience", () => {
+  test("driftRefresh aborts the merge on conflict and rethrows", async () => {
+    const calls: string[][] = [];
+    const run: CmdRunner = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "git" && args[0] === "merge" && args[1] !== "--abort") {
+        throw new Error("CONFLICT (content): merge conflict");
+      }
+      return "";
+    };
+    await expect(new GitForgeAdapter(OPTS(run)).driftRefresh("track/x")).rejects.toThrow(
+      /CONFLICT/,
+    );
+    expect(calls).toContainEqual(["git", "merge", "--abort"]); // workdir recovered
+    expect(calls.some((c) => c[0] === "git" && c[1] === "push")).toBe(false); // never pushed
+  });
 });

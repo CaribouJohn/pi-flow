@@ -62,7 +62,14 @@ export class GitForgeAdapter implements ForgePort {
   async driftRefresh(trackBranch: string): Promise<void> {
     await this.git(["fetch", "origin"]);
     await this.git(["checkout", trackBranch]);
-    await this.git(["merge", `origin/${this.defaultBranch}`, "--no-edit"]);
+    try {
+      await this.git(["merge", `origin/${this.defaultBranch}`, "--no-edit"]);
+    } catch (err) {
+      // Recover the workdir so a conflict surfaces as a clean failure (the
+      // engine parks it, SPEC §8.7) instead of leaving it stuck mid-merge.
+      await this.git(["merge", "--abort"]).catch(() => {});
+      throw err;
+    }
     await this.git(["push", "origin", trackBranch]);
   }
 
@@ -100,8 +107,13 @@ export class GitForgeAdapter implements ForgePort {
     return branch;
   }
 
-  /** Open the slice PR with base = the track branch (S5). */
+  /** Open the slice PR with base = the track branch (S5). Idempotent (§8.8). */
   async openPr(sliceId: number, base: string): Promise<PullRequest> {
+    // Don't open a PR that already exists (e.g. a crash/replay between push and
+    // create) — return the existing one.
+    const existing = await this.getSlicePr(sliceId);
+    if (existing !== null) return existing;
+
     const branch = sliceBranch(sliceId);
     await this.git(["push", "-u", "origin", branch]);
     const out = await this.gh([
@@ -171,7 +183,7 @@ export class GitForgeAdapter implements ForgePort {
   async deleteBranch(branch: string): Promise<void> {
     // Tolerant: the branch may already be gone (e.g. merge auto-deleted it).
     await this.run("git", ["push", "origin", "--delete", branch], { cwd: this.workdir }).catch(
-      () => {},
+      (err) => console.warn(`[git-forge] deleteBranch(${branch}) failed (ignored):`, err),
     );
   }
 }
@@ -242,7 +254,7 @@ function parseMarker(body: string): Marker | null {
 
 function parsePrNumber(ghCreateOutput: string): number {
   const n = Number(ghCreateOutput.trim().split("/").pop());
-  if (!Number.isInteger(n))
+  if (!Number.isInteger(n) || n <= 0)
     throw new Error(`could not parse PR number from: ${ghCreateOutput.trim()}`);
   return n;
 }
