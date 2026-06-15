@@ -1,0 +1,225 @@
+import { describe, expect, test } from "bun:test";
+import type { PlanReviewVerdict } from "@pi-flow/flow-engine";
+import {
+  PLAN_REVIEW_TOOLS,
+  PLAN_VERDICT_TOOL,
+  PiPlanReviewer,
+  buildPlanReviewPrompt,
+} from "../src/pi-plan-reviewer.ts";
+import { makeCredentials } from "./helpers.ts";
+
+const MODEL = { provider: "openai", id: "gpt-5" };
+
+// ── Prompt building ─────────────────────────────────────────────────────────
+
+describe("buildPlanReviewPrompt", () => {
+  test("includes the PRD body and child items", () => {
+    const p = buildPlanReviewPrompt("THE PRD", [
+      { id: 10, body: "child 10 body" },
+      { id: 11, body: "child 11 body" },
+    ]);
+    expect(p).toContain("THE PRD");
+    expect(p).toContain("child 10 body");
+    expect(p).toContain("child 11 body");
+  });
+
+  test("includes the three semantic smells in the instructions", () => {
+    const p = buildPlanReviewPrompt("PRD", [{ id: 10, body: "body" }]);
+    expect(p).toContain("ADR conflict");
+    expect(p).toContain("Irreversible migration");
+    expect(p).toContain("Security surface");
+  });
+
+  test("instructs to call submit_plan_review", () => {
+    const p = buildPlanReviewPrompt("PRD", [{ id: 10, body: "body" }]);
+    expect(p).toContain("submit_plan_review");
+  });
+
+  test("handles empty children list gracefully", () => {
+    const p = buildPlanReviewPrompt("PRD with no children", []);
+    expect(p).toContain("PRD with no children");
+    expect(p).toContain("no child items found");
+    expect(p).toContain("escalate");
+  });
+
+  test("includes child count in heading", () => {
+    const p = buildPlanReviewPrompt("PRD", [
+      { id: 1, body: "one" },
+      { id: 2, body: "two" },
+      { id: 3, body: "three" },
+    ]);
+    expect(p).toContain("3 total");
+  });
+});
+
+// ── Agent behaviour (fake session) ──────────────────────────────────────────
+
+/** Shape the plan-reviewer's tool handler expects — mirror of PlanReviewVerdict
+ *  but with string keys for childAgentReady (the tool uses Type.Record(String)). */
+interface ToolVerdict {
+  decision: "CLEAR" | "ESCALATE";
+  risks: string[];
+  childAgentReady: Record<string, { pass: boolean; reason?: string }>;
+}
+
+describe("PiPlanReviewer.review", () => {
+  function reviewer(opts: { submit?: ToolVerdict; key?: boolean; submitOnCall?: number }) {
+    let toolsSeen: readonly string[] | undefined;
+    let promptCalls = 0;
+    const rev = new PiPlanReviewer({
+      repo: "o/r",
+      workdir: "/wd",
+      model: MODEL,
+      credentials: makeCredentials(opts.key === false ? {} : { openai: "sk" }),
+      gh: async (args) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          return `body of #${args[2]}`;
+        }
+        if (args[0] === "issue" && args[1] === "list") {
+          return JSON.stringify([
+            { number: 10, body: "child 10\nParent: #1" },
+            { number: 11, body: "child 11\nParent: #1" },
+          ]);
+        }
+        return "";
+      },
+      sessionFactory: async (sopts) => {
+        toolsSeen = sopts.tools as readonly string[] | undefined;
+        return {
+          prompt: async () => {
+            promptCalls++;
+            // Simulate the plan-reviewer calling submit_plan_review on the
+            // configured prompt (1st call by default; 2nd = after the nudge).
+            // Cast via unknown — the SDK's wrapped execute carries extra context
+            // args our handler ignores (same pattern as pi-reviewer.test.ts).
+            const tool = sopts.customTools?.[0];
+            if (
+              opts.submit !== undefined &&
+              tool !== undefined &&
+              promptCalls === (opts.submitOnCall ?? 1)
+            ) {
+              const exec = tool.execute as unknown as (
+                id: string,
+                p: ToolVerdict,
+              ) => Promise<unknown>;
+              await exec("call-1", opts.submit);
+            }
+          },
+        };
+      },
+    });
+    return { rev, tools: () => toolsSeen };
+  }
+
+  const clearVerdict: ToolVerdict = {
+    decision: "CLEAR",
+    risks: [],
+    childAgentReady: { "10": { pass: true }, "11": { pass: true } },
+  };
+
+  const escalateVerdict: ToolVerdict = {
+    decision: "ESCALATE",
+    risks: ["security surface: child 10 touches auth middleware"],
+    childAgentReady: {
+      "10": { pass: false, reason: "auth changes unaccounted" },
+      "11": { pass: true },
+    },
+  };
+
+  test("returns a CLEAR verdict when the agent submits CLEAR", async () => {
+    const { rev } = reviewer({ submit: clearVerdict });
+    const result = await rev.review(1);
+    expect(result.decision).toBe("CLEAR");
+    expect(result.risks).toEqual([]);
+    expect(result.childAgentReady[10]?.pass).toBe(true);
+    expect(result.childAgentReady[11]?.pass).toBe(true);
+  });
+
+  test("returns an ESCALATE verdict with named risks", async () => {
+    const { rev } = reviewer({ submit: escalateVerdict });
+    const result = await rev.review(1);
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.risks).toContain("security surface: child 10 touches auth middleware");
+    expect(result.childAgentReady[10]?.pass).toBe(false);
+    expect(result.childAgentReady[10]?.reason).toBe("auth changes unaccounted");
+  });
+
+  test("nudges and captures a verdict submitted only after the nudge", async () => {
+    const { rev } = reviewer({
+      submit: clearVerdict,
+      submitOnCall: 2,
+    });
+    const result = await rev.review(1);
+    expect(result.decision).toBe("CLEAR");
+  });
+
+  test("fails safe to ESCALATE when no verdict is submitted even after the nudge", async () => {
+    const { rev } = reviewer({});
+    const result = await rev.review(1);
+    expect(result.decision).toBe("ESCALATE");
+    expect(result.risks).toContain("Plan review agent did not submit a verdict");
+    expect(result.childAgentReady).toEqual({});
+  });
+
+  test("allowlists read-only tools + submit_plan_review (no bash/write)", async () => {
+    const { rev, tools } = reviewer({ submit: clearVerdict });
+    await rev.review(1);
+    expect(tools()).toEqual([...PLAN_REVIEW_TOOLS, PLAN_VERDICT_TOOL]);
+    expect(tools()).not.toContain("bash");
+    expect(tools()).not.toContain("write");
+    expect(tools()).not.toContain("edit");
+  });
+
+  test("throws without an API key", async () => {
+    const { rev } = reviewer({ key: false });
+    await expect(rev.review(1)).rejects.toThrow(/no API key/);
+  });
+
+  test("fetches the parent PRD and child bodies via gh", async () => {
+    const bodies: string[] = [];
+    const rev = new PiPlanReviewer({
+      repo: "o/r",
+      workdir: "/wd",
+      model: MODEL,
+      credentials: makeCredentials({ openai: "sk" }),
+      gh: async (args) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          bodies.push(`view:${args[2]}`);
+          return `body #${args[2]}`;
+        }
+        if (args[0] === "issue" && args[1] === "list") {
+          return JSON.stringify([
+            { number: 10, body: "c10\nParent: #1" },
+            { number: 11, body: "c11\nParent: #1" },
+            { number: 99, body: "other" },
+          ]);
+        }
+        return "";
+      },
+      sessionFactory: async (sopts) => {
+        return {
+          prompt: async () => {
+            // Immediately call submit_plan_review with a CLEAR verdict.
+            const tool = sopts.customTools?.[0];
+            if (tool !== undefined) {
+              const exec = tool.execute as unknown as (
+                id: string,
+                p: ToolVerdict,
+              ) => Promise<unknown>;
+              await exec("call-1", {
+                decision: "CLEAR",
+                risks: [],
+                childAgentReady: { "10": { pass: true }, "11": { pass: true } },
+              });
+            }
+          },
+        };
+      },
+    });
+    await rev.review(1);
+    expect(bodies).toContain("view:1");
+    expect(bodies).toContain("view:10");
+    expect(bodies).toContain("view:11");
+    expect(bodies).not.toContain("view:99");
+  });
+});

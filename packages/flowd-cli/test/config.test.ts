@@ -14,6 +14,8 @@ const VALID = {
   models: {
     implement: { provider: "anthropic", id: "claude-opus-4-8" },
     review: { provider: "openai", id: "gpt-5" },
+    slice: { provider: "anthropic", id: "claude-opus-4-8" },
+    planReview: { provider: "openai", id: "gpt-5" },
   },
 };
 
@@ -26,6 +28,7 @@ describe("parseConfig", () => {
     const same = {
       ...VALID,
       models: {
+        ...VALID.models,
         implement: { provider: "anthropic", id: "claude-opus-4-8" },
         review: { provider: "anthropic", id: "claude-opus-4-8" },
       },

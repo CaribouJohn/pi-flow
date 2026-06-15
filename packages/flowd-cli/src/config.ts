@@ -63,12 +63,16 @@ export function parseConfig(input: unknown): FlowdConfig {
 
 function parseModels(input: unknown): RoleModelConfig {
   if (typeof input !== "object" || input === null) {
-    throw new Error("flowd config.models must be an object with implement + review");
+    throw new Error(
+      "flowd config.models must be an object with implement, review, slice, planReview",
+    );
   }
   const m = input as Record<string, unknown>;
   return {
     implement: parseModel(m.implement, "implement"),
     review: parseModel(m.review, "review"),
+    slice: parseModel(m.slice, "slice"),
+    planReview: parseModel(m.planReview, "planReview"),
   };
 }
 
