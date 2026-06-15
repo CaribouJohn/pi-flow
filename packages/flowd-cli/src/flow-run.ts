@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   type AgentPort,
   type OrchestratorPorts,
@@ -76,8 +77,12 @@ export async function runFlow(config: FlowdConfig, trackId: number): Promise<Run
   // Use only credential-store keys, never ambient env (ADR-0029).
   scrubProviderEnvKeys();
   const credentials = new FileCredentialStore(config.credentialsPath);
-  await ensureWorkdir(config.repo, config.workdir);
-  const ports = buildPorts(config, credentials);
+  // Resolve the workdir to an absolute path so git (`git -C`) and the agent's
+  // file tools (session cwd) operate on the SAME tree — a relative path can
+  // otherwise let the agent edit one place while the commit checks another.
+  const resolved: FlowdConfig = { ...config, workdir: resolve(config.workdir) };
+  await ensureWorkdir(resolved.repo, resolved.workdir);
+  const ports = buildPorts(resolved, credentials);
   return runTrack(ports, trackId, {
     reviewerIterationCap: config.reviewerIterationCap,
     actor: config.actor,

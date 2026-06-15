@@ -58,6 +58,23 @@ export const realSessionFactory: CodingSessionFactory = async (opts) => {
     ...(opts.tools !== undefined ? { tools: opts.tools } : {}),
     ...(opts.customTools !== undefined ? { customTools: opts.customTools } : {}),
   });
+
+  // FLOWD_DEBUG=1 streams the agent's text + tool activity to stderr, so a run
+  // that "produced no changes" can be diagnosed (did the model act, or not?).
+  if (process.env.FLOWD_DEBUG !== undefined && process.env.FLOWD_DEBUG !== "") {
+    session.subscribe((event) => {
+      const e = event as unknown as {
+        type?: string;
+        assistantMessageEvent?: { type?: string; delta?: string };
+      };
+      if (e.type === "message_update" && e.assistantMessageEvent?.type === "text_delta") {
+        process.stderr.write(e.assistantMessageEvent.delta ?? "");
+      } else if (e.type !== undefined) {
+        process.stderr.write(`\n[pi:${e.type}]\n`);
+      }
+    });
+  }
+
   return { prompt: (text: string) => session.prompt(text) };
 };
 
