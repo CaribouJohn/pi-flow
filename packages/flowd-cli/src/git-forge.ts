@@ -125,6 +125,11 @@ export class GitForgeAdapter implements ForgePort {
     return branch;
   }
 
+  /** Push the slice branch's latest commits to origin (S6a re-implement). */
+  async pushSlice(sliceId: number): Promise<void> {
+    await this.git(["push", "origin", sliceBranch(sliceId)]);
+  }
+
   /** Open the slice PR with base = the track branch (S5). Idempotent (§8.8). */
   async openPr(sliceId: number, base: string): Promise<PullRequest> {
     // Don't open a PR that already exists (e.g. a crash/replay between push and

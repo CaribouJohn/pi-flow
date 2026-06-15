@@ -158,6 +158,12 @@ describe("GitForgeAdapter — PRs", () => {
     expect(create?.args).toContain("track/x");
   });
 
+  test("pushSlice publishes the slice branch to origin (S6a)", async () => {
+    const { run, calls } = makeFake();
+    await new GitForgeAdapter(OPTS(run)).pushSlice(2);
+    expect(calls.map((c) => c.args.join(" "))).toContain("push origin slice/2");
+  });
+
   test("mergePr merges a track-based PR with --squash", async () => {
     const { run, calls } = makeFake({ prBase: "track/x" });
     await new GitForgeAdapter(OPTS(run)).mergePr(200);

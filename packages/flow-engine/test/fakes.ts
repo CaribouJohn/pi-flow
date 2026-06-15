@@ -71,6 +71,8 @@ export interface FakeFlow {
     review: number[];
     merged: number[];
     deletedBranches: string[];
+    /** Slice ids whose branch was pushed to origin (S6a re-implement). */
+    pushed: number[];
     /** Track branches created by createTrackBranch (idempotent). */
     createTrackBranch: string[];
     /** Role changes made via setRole: (itemId, newRole). */
@@ -120,6 +122,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     review: [],
     merged: [],
     deletedBranches: [],
+    pushed: [],
     createTrackBranch: [],
     roleChanges: [],
     planReview: [],
@@ -179,6 +182,9 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       const pr: PullRequest = { number: ++prCounter, base, status: "open", reviewAttempts: 0 };
       must(id).pr = pr;
       return { ...pr };
+    },
+    pushSlice: async (sliceId) => {
+      counts.pushed.push(sliceId);
     },
     recordReviewVerdict: async (prNumber, verdict) => {
       const rec = byPr(prNumber);

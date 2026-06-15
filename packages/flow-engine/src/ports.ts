@@ -36,6 +36,13 @@ export interface ForgePort {
   createSliceBranch(sliceId: number, fromBranch: string): Promise<string>;
   /** Open the slice PR with base = the track branch (S5). */
   openPr(sliceId: number, base: string): Promise<PullRequest>;
+  /**
+   * Push the slice branch's latest commits to origin (S6a). The implementer
+   * commits a re-implementation locally; without publishing it the PR diff (and
+   * thus the reviewer) keeps seeing the original code, so the agent can never
+   * satisfy the reviewer. Called before reopenForReview.
+   */
+  pushSlice(sliceId: number): Promise<void>;
   /** Record a review outcome: set status + increment reviewAttempts (S6). */
   recordReviewVerdict(prNumber: number, verdict: Verdict): Promise<void>;
   /** Re-open a changes-requested PR for re-review after a fix (S6a). */

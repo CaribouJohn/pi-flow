@@ -217,6 +217,9 @@ async function implementSlice(
   }
 
   if (kind === "reimplement" && slice.pr !== null) {
+    // Publish the re-implementation to origin BEFORE reopening — otherwise the
+    // PR diff stays at the original code and the reviewer never sees the fix.
+    await ports.forge.pushSlice(slice.id);
     await ports.forge.reopenForReview(slice.pr.number);
     return { detail: `re-implemented; PR #${slice.pr.number} re-opened for review` };
   }

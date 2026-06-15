@@ -84,6 +84,9 @@ describe("runTrack — review changes loop (S6a), bounded", () => {
     // re-implement carried the prior findings back to the implementer.
     const reimplement = flow.counts.implement[1];
     expect(reimplement?.priorFindings).toEqual(["fix the edge case"]);
+    // the re-implementation is published to origin BEFORE re-review, so the
+    // reviewer sees the fix and not the original code (bug #5 regression guard).
+    expect(flow.counts.pushed).toContain(10);
     // the verdict + findings are posted to the tracker.
     expect(
       flow.comments.some(
