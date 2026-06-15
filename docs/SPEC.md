@@ -164,12 +164,21 @@ in-progress):
 | S4 | in-situ verify | UI/device-bound slice | IMPLEMENTER | profile has an in-situ harness | drive the real app; capture evidence. **If not automatable, do NOT fake it — defer that check to acceptance (§9)** |
 | S5 | open PR | gate green | IMPLEMENTER | base = **track branch** | open slice PR → derived *implemented* |
 | S6 | review gate | PR open | REVIEWER (fresh context, ≠ IMPLEMENTER) | review:agent | adversarial review → **APPROVE** or **REQUEST CHANGES**; post verdict comment |
-| S6a | changes requested | verdict | ORCHESTRATOR | REQUEST CHANGES | back to S2 with the review |
+| S6a | changes requested | verdict | ORCHESTRATOR | REQUEST CHANGES | back to S2 with the review; **publish (push) the re-implementation to the PR branch** before re-review — the reviewer diffs the *PR*, so a local-only re-implement is invisible and the agent can never converge |
 | S6h | human review | PR open | HUMAN | review:human | route to human reviewer instead of S6 |
-| S7 | merge | approved | ORCHESTRATOR | green gate + APPROVE | **merge slice PR into the track branch** (agent-merged); delete slice branch; **close the slice Item** |
+| S7 | merge | approved | ORCHESTRATOR | green gate + APPROVE | **first refresh the slice against the track branch** (sibling slices may have merged during this run, leaving it stale → an un-creatable merge commit); on **conflict, park** for manual resolution (never merge past it); re-check the gate; then **merge slice PR into the track branch** (agent-merged); delete slice branch; **close the slice Item** |
 | S8 | repeat | — | ORCHESTRATOR | more assignable slices | loop to S1; closing S7 may unblock dependents |
 
 When no assignable slice remains and only the acceptance Item is open → §5.5.
+
+**Workdir preconditions (every entry, before S2/S3).** The orchestrator works in a
+disposable **scratch workdir** (all durable state is tracker + git, §0). Two requirements,
+both learned the hard way: (1) the workdir **MUST live outside the operated repo** — a
+workdir nested inside it lets the coding agent's tools resolve paths up into the operator's
+real checkout and write there (a genuine leak); (2) the orchestrator **prepares the workdir
+before the gate** — a fresh clone has no dependencies installed, so the verify gate would go
+red on missing modules and every slice would park. Refuse to run a nested workdir; install
+deps on clone/fetch.
 
 ### 5.5 Acceptance (back bookend — human-owned) + the inviolable merge boundary
 
@@ -182,6 +191,15 @@ When no assignable slice remains and only the acceptance Item is open → §5.5.
 **Boundary (do not cross): the harness never merges `main`.** It opens/stages the
 track→main PR and parks for the human — even when the human says "just merge it." See
 §7 (observed) and §9 (invariant).
+
+**Acceptance is more than the gate (A2).** The verify gate is unit + lint + type; it stays
+**green while *integrated* behaviour is broken** — a method stubbed to throw but only ever
+faked in tests, an invalid CLI flag, an unwired module. Independent review is static and
+misses the same class. So A2 verification **must include a live end-to-end exercise of the
+integrated feature** (run the real entry path / command), the only place these surface. A
+defect caught live that the gate missed must, in its corrective (A3), **add the coverage
+that would have caught it** — else the gap recurs. (Codified after a feature passed every
+gate and review yet failed on first real invocation.)
 
 ---
 
@@ -253,6 +271,16 @@ these in the harness:
 - **Closing semantics:** slice Items close on merge-into-track (S7); the parent +
   acceptance Items close on the track→main merge, via `Closes #n` keywords in the PR
   body (A1/A2). Deferred/native follow-ups stay open and are linked.
+- **Dogfooding the harness on itself (PRD-0003) hardened the loop.** Building the harness
+  *through* the harness surfaced a cluster of issues invisible to unit tests, now codified
+  above: the re-implement must be **pushed** or the reviewer never sees it (S6a); a slice
+  goes **stale when siblings merge mid-run** and must be refreshed before merge (S7); the
+  scratch **workdir must be isolated outside the repo** and have **deps installed** (§5.4
+  preconditions); an **externally-merged PR** means the slice is done even if its Item wasn't
+  closed by S7 (§8.8); and **acceptance needs a live run**, not just the gate (§5.5). A
+  meta-observation: the **implementer model must meet the reviewer's bar** — a thorough
+  different-model reviewer will not converge against a weaker implementer within the
+  iteration cap, parking for a human instead (correct, but slow).
 
 ---
 
@@ -325,8 +353,16 @@ Then **park** and resume when the human's action shows up as a tracker state cha
 ### 8.8 Resumption & idempotency
 Because state is externalized (§0), restart = re-read + re-derive. Make every action
 **idempotent or guarded**: check before label/assign/comment; don't open a PR that
-exists; don't re-run a passed gate; key one-shot side-effects (like a permission probe)
-behind a flag. A duplicate tick must be a no-op.
+exists; don't re-run a passed gate; reuse an existing slice branch rather than force-resetting
+it (a re-created branch destroys an unpushed implementation); key one-shot side-effects
+(like a permission probe) behind a flag. A duplicate tick must be a no-op.
+
+**Detect work done outside the loop.** A slice's PR may be **merged externally** (a
+maintainer or bot resolves a conflict and merges). Deriving "done" only from *open* PRs +
+the slice's own role then mis-fires: the loop sees an open Item with no open PR and
+re-implements an already-merged slice. Derive `done` from the **merged** PR too (or the
+absence of the slice's changes vs the track), and close/skip the Item rather than re-running
+it.
 
 ### 8.9 Capability surface (the integration contract)
 The harness needs: **tracker** CRUD + dependency parsing + issue creation; **git/forge**
