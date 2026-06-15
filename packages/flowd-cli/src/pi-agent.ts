@@ -23,14 +23,17 @@ export interface CodingSession {
   prompt(text: string): Promise<void>;
 }
 
+/** The SDK's own option types, so our seam can't drift from `createAgentSession`. */
+type SessionOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
+
 export interface CreateSessionOpts {
   model: ModelId;
   apiKey: string;
   cwd: string;
   /** Restrict built-in tools (e.g. read-only for the reviewer). Omit = defaults. */
-  tools?: string[];
-  // biome-ignore lint/suspicious/noExplicitAny: pi-coding-agent custom tool shape (defineTool result).
-  customTools?: any[];
+  tools?: SessionOptions["tools"];
+  /** Custom tools (e.g. the reviewer's submit_verdict), typed by the SDK. */
+  customTools?: SessionOptions["customTools"];
 }
 
 export type CodingSessionFactory = (opts: CreateSessionOpts) => Promise<CodingSession>;
@@ -43,7 +46,7 @@ export const realSessionFactory: CodingSessionFactory = async (opts) => {
   // find() accepts arbitrary provider/id strings (incl. custom models) — the
   // right call for a config-driven model identity.
   const model = modelRegistry.find(opts.model.provider, opts.model.id);
-  if (model === undefined || model === null) {
+  if (model === undefined) {
     throw new Error(`unknown model ${opts.model.provider}/${opts.model.id}`);
   }
   const { session } = await createAgentSession({
@@ -60,6 +63,11 @@ export const realSessionFactory: CodingSessionFactory = async (opts) => {
 
 /** Run `gh` and return stdout (default dependency for fetching slice briefs). */
 export const realGh = async (args: string[]): Promise<string> => await $`gh ${args}`.text();
+
+/** Check out a branch in the workdir (so the agent writes/commits on the slice branch). */
+export const realCheckout = async (workdir: string, branch: string): Promise<void> => {
+  await $`git -C ${workdir} checkout ${branch}`.quiet();
+};
 
 /** Commit all changes in a workdir; resolves false if there was nothing to commit. */
 export const realCommit = async (workdir: string, message: string): Promise<boolean> => {

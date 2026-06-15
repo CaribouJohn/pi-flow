@@ -21,30 +21,40 @@ describe("PiImplementer.implement", () => {
   function harness(creds: CredentialStore) {
     const prompts: string[] = [];
     const commits: string[] = [];
+    const checkouts: string[] = [];
+    let sessionCwd: string | undefined;
     const impl = new PiImplementer({
       repo: "o/r",
       workdir: "/wd",
       model: MODEL,
       credentials: creds,
-      sessionFactory: async () => ({
-        prompt: async (t) => {
-          prompts.push(t);
-        },
-      }),
+      sessionFactory: async (opts) => {
+        sessionCwd = opts.cwd;
+        return {
+          prompt: async (t) => {
+            prompts.push(t);
+          },
+        };
+      },
       gh: async (args) => (args[0] === "issue" ? "the slice brief" : ""),
       commit: async (_wd, msg) => {
         commits.push(msg);
         return true;
       },
+      checkout: async (_wd, branch) => {
+        checkouts.push(branch);
+      },
     });
-    return { impl, prompts, commits };
+    return { impl, prompts, commits, checkouts, cwd: () => sessionCwd };
   }
 
-  test("fetches the brief, prompts the session, and commits", async () => {
-    const { impl, prompts, commits } = harness(makeCredentials({ anthropic: "sk" }));
-    await impl.implement({ sliceId: 2, branch: "slice/2" });
-    expect(prompts[0]).toContain("the slice brief");
-    expect(commits[0]).toContain("slice #2");
+  test("checks out the slice branch, prompts in the workdir, and commits", async () => {
+    const h = harness(makeCredentials({ anthropic: "sk" }));
+    await h.impl.implement({ sliceId: 2, branch: "slice/2" });
+    expect(h.checkouts).toEqual(["slice/2"]); // worked on the slice branch
+    expect(h.cwd()).toBe("/wd"); // session ran in the workdir
+    expect(h.prompts[0]).toContain("the slice brief");
+    expect(h.commits[0]).toContain("slice #2");
   });
 
   test("throws when the provider has no API key", async () => {
@@ -62,6 +72,7 @@ describe("PiImplementer.implement", () => {
       sessionFactory: async () => ({ prompt: async () => {} }),
       gh: async () => "brief",
       commit: async () => false,
+      checkout: async () => {},
     });
     await expect(impl.implement({ sliceId: 2, branch: "slice/2" })).rejects.toThrow(/no changes/);
   });

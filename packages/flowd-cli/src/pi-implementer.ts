@@ -1,7 +1,13 @@
 import type { AgentContext } from "@pi-flow/flow-engine";
 import type { CredentialStore } from "./credentials.ts";
 import type { ModelId } from "./model-config.ts";
-import { type CodingSessionFactory, realCommit, realGh, realSessionFactory } from "./pi-agent.ts";
+import {
+  type CodingSessionFactory,
+  realCheckout,
+  realCommit,
+  realGh,
+  realSessionFactory,
+} from "./pi-agent.ts";
 
 /**
  * The implementer half of the engine's `AgentPort` (#86): a `pi-coding-agent`
@@ -17,6 +23,7 @@ export interface PiImplementerOptions {
   sessionFactory?: CodingSessionFactory;
   gh?: (args: string[]) => Promise<string>;
   commit?: (workdir: string, message: string) => Promise<boolean>;
+  checkout?: (workdir: string, branch: string) => Promise<void>;
 }
 
 export class PiImplementer {
@@ -27,6 +34,7 @@ export class PiImplementer {
   private readonly sessionFactory: CodingSessionFactory;
   private readonly gh: (args: string[]) => Promise<string>;
   private readonly commit: (workdir: string, message: string) => Promise<boolean>;
+  private readonly checkout: (workdir: string, branch: string) => Promise<void>;
 
   constructor(opts: PiImplementerOptions) {
     this.repo = opts.repo;
@@ -36,6 +44,7 @@ export class PiImplementer {
     this.sessionFactory = opts.sessionFactory ?? realSessionFactory;
     this.gh = opts.gh ?? realGh;
     this.commit = opts.commit ?? realCommit;
+    this.checkout = opts.checkout ?? realCheckout;
   }
 
   async implement(ctx: AgentContext): Promise<void> {
@@ -43,7 +52,13 @@ export class PiImplementer {
     if (apiKey === null) {
       throw new Error(`no API key for provider "${this.model.provider}" (implementer)`);
     }
+    // Work and commit on the slice branch explicitly — never trust the workdir's
+    // current branch (a wrong-branch commit would corrupt the track).
+    await this.checkout(this.workdir, ctx.branch);
     const brief = await this.fetchBrief(ctx.sliceId);
+    if (brief.length === 0) {
+      throw new Error(`slice #${ctx.sliceId} has no brief (empty issue body)`);
+    }
     const session = await this.sessionFactory({ model: this.model, apiKey, cwd: this.workdir });
     await session.prompt(buildImplementPrompt(brief, ctx.priorFindings));
 
