@@ -9,6 +9,7 @@ import type {
   Effort,
   ForgePort,
   OrchestratorPorts,
+  PlanReviewVerdict,
   PullRequest,
   ReviewPolicy,
   Role,
@@ -32,11 +33,17 @@ export interface FakeSliceSpec {
 export interface FakeConfig {
   trackId?: number;
   trackBranch?: string;
+  /** The parent item's role. Defaults to `tracking` for legacy tracks. */
+  trackRole?: Role;
   slices: FakeSliceSpec[];
   /** Per-slice review verdict queue; defaults to APPROVE when exhausted. */
   reviewVerdicts?: Record<number, Verdict[]>;
   /** Per-slice verify result queue; defaults to green when exhausted. */
   verifyResults?: Record<number, boolean[]>;
+  /** Plan-review agent verdict to return. Omit to simulate a missing verdict (escalate). */
+  planReviewVerdict?: PlanReviewVerdict | null;
+  /** If set, planReview throws instead of returning a verdict (simulate agent failure). */
+  planReviewError?: Error;
 }
 
 interface Rec {
@@ -55,6 +62,8 @@ export interface FakeFlow {
   ports: OrchestratorPorts;
   /** Current state of a slice, for assertions. */
   slice(id: number): Rec;
+  /** The parent track's mutable role, for assertions after plan-gate mutations. */
+  track: Track;
   comments: { id: number; body: string }[];
   counts: {
     driftRefresh: number;
@@ -62,6 +71,12 @@ export interface FakeFlow {
     review: number[];
     merged: number[];
     deletedBranches: string[];
+    /** Track branches created by createTrackBranch (idempotent). */
+    createTrackBranch: string[];
+    /** Role changes made via setRole: (itemId, newRole). */
+    roleChanges: { id: number; role: Role }[];
+    /** planReview calls to the agent. */
+    planReview: number[];
   };
 }
 
@@ -71,6 +86,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
   const track: Track = {
     id: config.trackId ?? 1,
     branch: config.trackBranch ?? "track/test",
+    role: config.trackRole ?? "tracking",
   };
 
   const recs = new Map<number, Rec>(
@@ -104,6 +120,9 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     review: [],
     merged: [],
     deletedBranches: [],
+    createTrackBranch: [],
+    roleChanges: [],
+    planReview: [],
   };
   let prCounter = 100;
 
@@ -138,6 +157,10 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     },
     comment: async (id, body) => {
       comments.push({ id, body });
+    },
+    setRole: async (itemId, role) => {
+      counts.roleChanges.push({ id: itemId, role });
+      track.role = role;
     },
   };
 
@@ -175,6 +198,9 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     deleteBranch: async (branch) => {
       counts.deletedBranches.push(branch);
     },
+    createTrackBranch: async (branch) => {
+      counts.createTrackBranch.push(branch);
+    },
   };
 
   const agent: AgentPort = {
@@ -185,6 +211,17 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       counts.review.push(ctx.sliceId);
       return reviewQueues.get(ctx.sliceId)?.shift() ?? APPROVE;
     },
+    planReview: async (trackId): Promise<PlanReviewVerdict> => {
+      counts.planReview.push(trackId);
+      if (config.planReviewError) throw config.planReviewError;
+      if (config.planReviewVerdict === undefined) {
+        throw new Error("fake: no plan-review verdict configured");
+      }
+      if (config.planReviewVerdict === null) {
+        throw new Error("fake: plan-review verdict is null (simulates missing agent)");
+      }
+      return config.planReviewVerdict;
+    },
   };
 
   const verify: VerifyGatePort = {
@@ -194,6 +231,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
   return {
     ports: { tracker, forge, agent, verify },
     slice: must,
+    track,
     comments,
     counts,
   };

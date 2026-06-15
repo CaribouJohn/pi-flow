@@ -63,7 +63,23 @@ export class GitHubTrackerAdapter implements TrackerPort {
   }
 
   async getTrack(trackId: number): Promise<Track> {
-    return { id: trackId, branch: this.trackBranch };
+    const role = await this.getParentRole(trackId);
+    return { id: trackId, branch: this.trackBranch, role };
+  }
+
+  /** Read the parent issue's role label. */
+  private async getParentRole(trackId: number): Promise<Role> {
+    const out = await this.run([
+      "issue",
+      "view",
+      String(trackId),
+      "--repo",
+      this.repo,
+      "--json",
+      "labels",
+    ]);
+    const labels = (JSON.parse(out) as { labels: { name: string }[] }).labels.map((l) => l.name);
+    return parseRole(labels) ?? "needs-triage";
   }
 
   async listSlices(trackId: number): Promise<TrackerSlice[]> {
@@ -99,6 +115,22 @@ export class GitHubTrackerAdapter implements TrackerPort {
 
   async comment(itemId: number, body: string): Promise<void> {
     await this.run(["issue", "comment", String(itemId), "--repo", this.repo, "--body", body]);
+  }
+
+  async setRole(itemId: number, role: Role): Promise<void> {
+    // Remove all existing role labels, then add the target.
+    for (const r of ROLE_LABELS) {
+      await this.run([
+        "issue",
+        "edit",
+        String(itemId),
+        "--repo",
+        this.repo,
+        "--remove-label",
+        r,
+      ]).catch(() => {});
+    }
+    await this.run(["issue", "edit", String(itemId), "--repo", this.repo, "--add-label", role]);
   }
 }
 

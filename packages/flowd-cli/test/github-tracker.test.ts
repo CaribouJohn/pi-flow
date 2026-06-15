@@ -93,6 +93,10 @@ describe("GitHubTrackerAdapter", () => {
     const run: GhRunner = async (args) => {
       calls.push(args);
       if (args[0] === "issue" && args[1] === "list") return issuesJson;
+      if (args[0] === "issue" && args[1] === "view") {
+        // Simulate `gh issue view --json labels` for getParentRole
+        return JSON.stringify({ labels: [{ name: "tracking" }] });
+      }
       return "";
     };
     return { run, calls };
@@ -123,10 +127,10 @@ describe("GitHubTrackerAdapter", () => {
     });
   });
 
-  test("getTrack returns the configured track branch", async () => {
+  test("getTrack returns the configured track branch with the parent role", async () => {
     const { run } = fakeRunner();
     const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
-    expect(await tracker.getTrack(1)).toEqual({ id: 1, branch: "track/x" });
+    expect(await tracker.getTrack(1)).toEqual({ id: 1, branch: "track/x", role: "tracking" });
   });
 
   test("mutations call gh with the expected args", async () => {

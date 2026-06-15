@@ -144,7 +144,7 @@ describe("runTrack — idempotency", () => {
 
 describe("decide — pure scheduler", () => {
   const base = (over: Partial<World["slices"][number]>): World => ({
-    track: { id: 1, branch: "track/test" },
+    track: { id: 1, branch: "track/test", role: "tracking" },
     slices: [
       {
         id: 10,
