@@ -61,7 +61,11 @@ export class GitForgeAdapter implements ForgePort {
   /** S0 — merge the default branch into the track branch (merge, not rebase). */
   async driftRefresh(trackBranch: string): Promise<void> {
     await this.git(["fetch", "origin"]);
-    await this.git(["checkout", trackBranch]);
+    // Sync the local track branch to origin (the source of truth — slice merges
+    // land on origin via `gh`, so the local branch goes stale and would push
+    // non-fast-forward). `-f -B` resets/recreates it from origin, discarding any
+    // leftover local state in this scratch workdir.
+    await this.git(["checkout", "-f", "-B", trackBranch, `origin/${trackBranch}`]);
     try {
       await this.git(["merge", `origin/${this.defaultBranch}`, "--no-edit"]);
     } catch (err) {

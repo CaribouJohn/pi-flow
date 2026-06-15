@@ -84,7 +84,7 @@ describe("GitForgeAdapter — git ops run in the workdir", () => {
     const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
     expect(git).toEqual([
       "fetch origin",
-      "checkout track/x",
+      "checkout -f -B track/x origin/track/x",
       "merge origin/main --no-edit",
       "push origin track/x",
     ]);

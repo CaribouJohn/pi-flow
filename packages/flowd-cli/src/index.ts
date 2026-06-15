@@ -22,5 +22,12 @@ try {
   process.exit(result.outcome === "fixpoint" ? 0 : 1);
 } catch (err) {
   console.error("flowd run failed:", err instanceof Error ? err.message : String(err));
+  // Bun.$ ShellError carries the command's stderr/stdout — surface it, otherwise
+  // a failed git/gh command is just an opaque "exit code N".
+  const shell = err as { stderr?: { toString(): string }; stdout?: { toString(): string } };
+  const stderr = shell.stderr?.toString().trim();
+  const stdout = shell.stdout?.toString().trim();
+  if (stderr) console.error(stderr);
+  else if (stdout) console.error(stdout);
   process.exit(1);
 }
