@@ -14,6 +14,7 @@ import { scrubProviderEnvKeys } from "./env-scrub.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
 import { GitHubTrackerAdapter } from "./github-tracker.ts";
 import { PiImplementer } from "./pi-implementer.ts";
+import { PiPlanReviewer } from "./pi-plan-reviewer.ts";
 import { PiReviewer } from "./pi-reviewer.ts";
 
 /** Runs a shell command in `cwd` and returns its exit code. */
@@ -54,15 +55,18 @@ export function buildPorts(config: FlowdConfig, credentials: CredentialStore): O
     model: config.models.review,
     credentials,
   });
-  // reviewer ≠ implementer: distinct sessions (per call) on distinct models
-  // (config.models, validated different in parseConfig — invariant #2).
+  // reviewer ≠ implementer (invariant #2) and planReview ≠ slice (plan-gate
+  // independence rule) — guaranteed by validateRoleModelConfig in parseConfig.
+  const planReviewer = new PiPlanReviewer({
+    repo: config.repo,
+    workdir: config.workdir,
+    model: config.models.planReview,
+    credentials,
+  });
   const agent: AgentPort = {
     implement: (ctx) => implementer.implement(ctx),
     review: (ctx) => reviewer.review(ctx),
-    // Plan-review agent — not yet wired (PRD-0003 slice 5).
-    planReview: async () => {
-      throw new Error("planReview agent not yet implemented (PRD-0003 slice 5)");
-    },
+    planReview: (trackId) => planReviewer.review(trackId),
   };
   const verify = makeVerifyGate(config.workdir, config.verifyCommand);
   return { tracker, forge, agent, verify };
