@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   type OrchestratorPorts,
+  type SlicePlan,
   type VerifyGatePort,
   runPlanGate,
   writeSlicePlan,
@@ -104,6 +105,9 @@ export async function runPlan(input: PlanFlowInput): Promise<PlanFlowOutput> {
   const workdir = resolve(input.config.workdir);
   const credentialsPath = resolve(input.config.credentialsPath);
   const prdPath = resolve(input.prdPath);
+  // Resolve the config so adapters receive absolute paths — relative workdir
+  // breaks git -C operations inside GitForgeAdapter (same as runFlow).
+  const config: FlowdConfig = { ...input.config, workdir, credentialsPath };
 
   if (!existsSync(prdPath)) {
     throw new Error(`PRD file not found: ${prdPath}`);
@@ -115,32 +119,45 @@ export async function runPlan(input: PlanFlowInput): Promise<PlanFlowOutput> {
   }
 
   const credentials = new FileCredentialStore(credentialsPath);
-  const ports = buildPlanPorts(input.config, credentials);
+  const ports = buildPlanPorts(config, credentials);
 
   // Fail fast if the sandbox is nested in the operator's repo (leak guard).
   assertWorkdirIsolated(workdir, process.cwd());
   // Ensure the workdir is a fresh clone of the repo (clone once, else fetch).
-  await ensureWorkdir(input.config.repo, workdir);
-
-  const opts = {
-    reviewerIterationCap: input.config.reviewerIterationCap,
-    actor: input.config.actor,
-    aiDisclaimer: input.config.aiDisclaimer,
-  };
+  await ensureWorkdir(config.repo, workdir);
 
   // ── T12: Slice ───────────────────────────────────────────────────────────
   const slicer = new PiSlicer({
-    repo: input.config.repo,
-    workdir: resolve(input.config.workdir),
-    model: input.config.models.slice,
+    repo: config.repo,
+    workdir,
+    model: config.models.slice,
     credentials,
   });
 
   console.error(`Slicing issue #${input.issue} from PRD ${prdPath}...`);
   const plan = await slicer.slice(input.issue, prd);
 
+  return runPlanPipeline(ports, config, { issue: input.issue, prd, plan });
+}
+
+/**
+ * Core plan pipeline (after file loading, credential setup, and agent slicing).
+ * Extracted from `runPlan` so it can be unit-tested with faked ports and a
+ * canned slice plan — the LLM-dependent slicer is factored out of scope.
+ */
+export async function runPlanPipeline(
+  ports: OrchestratorPorts,
+  config: FlowdConfig,
+  input: { issue: number; prd: string; plan: SlicePlan },
+): Promise<PlanFlowOutput> {
+  const opts = {
+    reviewerIterationCap: config.reviewerIterationCap,
+    actor: config.actor,
+    aiDisclaimer: config.aiDisclaimer,
+  };
+
   // writeSlicePlan validates + writes children + acceptance via tracker port.
-  const sliceResult = await writeSlicePlan(ports, input.issue, plan, opts);
+  const sliceResult = await writeSlicePlan(ports, input.issue, input.plan, opts);
   console.error(
     `Created ${sliceResult.childIds.length} slice(s) and acceptance #${sliceResult.acceptanceId ?? "?"}.`,
   );
@@ -149,8 +166,7 @@ export async function runPlan(input: PlanFlowInput): Promise<PlanFlowOutput> {
   // Compute the cost estimate from the child slices (their effort levels).
   const trackerSlices = await ports.tracker.listSlices(input.issue);
   const childSlices = trackerSlices.filter((s) => s.role !== "needs-acceptance" && !s.closed);
-  const costEstimate =
-    input.config.costEstimator && planCostEstimate(childSlices, input.config.costEstimator);
+  const costEstimate = config.costEstimator && planCostEstimate(childSlices, config.costEstimator);
 
   const gate = await runPlanGate(ports, input.issue, opts, costEstimate ?? undefined);
 
