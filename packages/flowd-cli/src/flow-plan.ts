@@ -11,11 +11,11 @@ import type { FlowdConfig } from "./config.ts";
 import { type CostEstimatorConfig, estimateTrackCost } from "./cost-estimator.ts";
 import { type CredentialStore, FileCredentialStore } from "./credentials.ts";
 import { scrubProviderEnvKeys } from "./env-scrub.ts";
+import { assertWorkdirIsolated, ensureWorkdir } from "./flow-run.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
 import { GitHubTrackerAdapter } from "./github-tracker.ts";
 import { PiPlanReviewer } from "./pi-plan-reviewer.ts";
 import { PiSlicer } from "./pi-slicer.ts";
-import { assertWorkdirIsolated, ensureWorkdir } from "./flow-run.ts";
 
 /**
  * Compute a track's pre-flight cost estimate from its slice set.
