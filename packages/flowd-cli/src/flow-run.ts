@@ -64,12 +64,21 @@ export function buildPorts(config: FlowdConfig, credentials: CredentialStore): O
   return { tracker, forge, agent, verify };
 }
 
-/** Ensure the workdir is a clone of the repo (clone once, else fetch). */
+/** Ensure the workdir is a clone of the repo (clone once, else fetch), with deps installed. */
 async function ensureWorkdir(repo: string, workdir: string): Promise<void> {
   if (existsSync(workdir)) {
     await $`git -C ${workdir} fetch origin`.quiet();
   } else {
     await $`gh repo clone ${repo} ${workdir}`.quiet();
+  }
+  // The verify gate (S3) runs in the workdir and typically needs installed
+  // dependencies — e.g. `tsc` resolving package types. A fresh clone has none,
+  // so without this the gate goes red on missing modules and every slice parks
+  // (found dogfooding against pi-flow's real gate; the trivial sandbox gate
+  // needed no deps). Bun-specific (the engine assumes Bun); fast no-op when
+  // already current, and skipped for repos without a package.json.
+  if (existsSync(`${workdir}/package.json`)) {
+    await $`bun install`.cwd(workdir).quiet();
   }
 }
 
