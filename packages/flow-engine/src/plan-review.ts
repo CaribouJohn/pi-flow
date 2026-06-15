@@ -87,8 +87,10 @@ export function combineVerdict(world: World, verdict: PlanReviewVerdict | null):
     }
   }
 
-  // 5. Any child missing from agent-ready entirely
+  // 5. Any non-acceptance child missing from agent-ready entirely.
+  // Acceptance items are meta-items reviewed by humans, not agents.
   for (const slice of world.slices) {
+    if (slice.role === "needs-acceptance") continue;
     if (!checkedIds.has(slice.id)) {
       risks.push(`Slice ${slice.id} has no agent-ready check`);
     }

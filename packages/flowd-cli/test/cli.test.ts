@@ -6,19 +6,57 @@ describe("parseArgs", () => {
     expect(parseArgs(["run", "--track", "7", "--config", "c.json"])).toEqual({
       command: "run",
       track: 7,
+      issue: undefined,
+      prd: undefined,
       config: "c.json",
     });
   });
 
   test("track/config undefined when absent", () => {
-    expect(parseArgs(["run"])).toEqual({ command: "run", track: undefined, config: undefined });
+    expect(parseArgs(["run"])).toEqual({
+      command: "run",
+      track: undefined,
+      issue: undefined,
+      prd: undefined,
+      config: undefined,
+    });
   });
 
   test("track is undefined when --track has no value", () => {
     expect(parseArgs(["run", "--track"])).toEqual({
       command: "run",
       track: undefined,
+      issue: undefined,
+      prd: undefined,
       config: undefined,
+    });
+  });
+
+  test("parses plan command with --issue and --prd", () => {
+    expect(parseArgs(["plan", "--issue", "5", "--prd", "docs/prd/foo.md"])).toEqual({
+      command: "plan",
+      track: undefined,
+      issue: 5,
+      prd: "docs/prd/foo.md",
+      config: undefined,
+    });
+  });
+
+  test("parses plan with all flags", () => {
+    expect(parseArgs(["plan", "--issue", "5", "--prd", "p.md", "--config", "c.json"])).toEqual({
+      command: "plan",
+      track: undefined,
+      issue: 5,
+      prd: "p.md",
+      config: "c.json",
+    });
+  });
+
+  test("--issue with no value yields undefined", () => {
+    // parseArgs now guards non-integer Number() results → undefined.
+    expect(parseArgs(["plan", "--issue", "--prd", "p.md"])).toMatchObject({
+      command: "plan",
+      issue: undefined,
     });
   });
 });
@@ -53,5 +91,53 @@ describe("planInvocation", () => {
       track: 5,
       config: undefined,
     });
+  });
+
+  // ── plan command ──
+
+  test("a valid plan invocation", () => {
+    expect(planInvocation(["plan", "--issue", "5", "--prd", "p.md"])).toEqual({
+      kind: "plan",
+      issue: 5,
+      prd: "p.md",
+      config: undefined,
+    });
+  });
+
+  test("plan with config", () => {
+    expect(planInvocation(["plan", "--issue", "5", "--prd", "p.md", "--config", "c.json"])).toEqual(
+      {
+        kind: "plan",
+        issue: 5,
+        prd: "p.md",
+        config: "c.json",
+      },
+    );
+  });
+
+  test.each([
+    ["no --issue", ["plan", "--prd", "p.md"]],
+    ["--issue with no value", ["plan", "--issue", "--prd", "p.md"]],
+    ["non-numeric issue", ["plan", "--issue", "abc", "--prd", "p.md"]],
+    ["zero issue", ["plan", "--issue", "0", "--prd", "p.md"]],
+    ["negative issue", ["plan", "--issue", "-1", "--prd", "p.md"]],
+  ])("plan: rejects %s as a usage error", (_label, argv) => {
+    expect(planInvocation(argv)).toMatchObject({ kind: "usage", code: 2 });
+  });
+
+  test("plan: rejects missing --prd", () => {
+    expect(planInvocation(["plan", "--issue", "5"])).toMatchObject({ kind: "usage", code: 2 });
+    const msg = (planInvocation(["plan", "--issue", "5"]) as { message: string }).message;
+    expect(msg).toContain("--prd");
+  });
+
+  test("plan: rejects --prd with empty value", () => {
+    // parseArgs yields prd: undefined when --prd has no value (eats the next flag).
+    // PlanInvocation catches the undefined.
+    const p = planInvocation(["plan", "--issue", "5", "--prd"]);
+    expect(p).toMatchObject({ kind: "usage", code: 2 });
+    if (p.kind === "usage") {
+      expect(p.message).toContain("--prd");
+    }
   });
 });

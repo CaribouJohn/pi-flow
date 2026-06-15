@@ -15,7 +15,8 @@
     "skipLibCheck": true,
     "baseUrl": ".",
     "paths": {
-      "@pi-flow/flow-engine": ["packages/flow-engine/src/index.ts"]
+      "@pi-flow/flow-engine": ["packages/flow-engine/src/index.ts"],
+      "@pi-flow/flow-engine/test/fakes": ["packages/flow-engine/test/fakes.ts"]
     }
   }
 }
