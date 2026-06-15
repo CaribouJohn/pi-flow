@@ -18,7 +18,7 @@ try {
     const result = await runPlan({ issue: plan.issue, prdPath: plan.prd, config });
     console.log(`parent: #${plan.issue}`);
     console.log(`slices: ${result.childIds.map((id) => `#${id}`).join(", ")}`);
-    console.log(`acceptance: #${result.acceptanceId}`);
+    console.log(`acceptance: #${result.acceptanceId ?? "?"}`);
     console.log(`gate: ${result.gate}`);
     if (result.risks.length > 0) {
       console.log("risks:");

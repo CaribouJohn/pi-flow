@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   type OrchestratorPorts,
-  type RunResult,
   type VerifyGatePort,
   runPlanGate,
   writeSlicePlan,
@@ -16,6 +15,7 @@ import { GitForgeAdapter } from "./git-forge.ts";
 import { GitHubTrackerAdapter } from "./github-tracker.ts";
 import { PiPlanReviewer } from "./pi-plan-reviewer.ts";
 import { PiSlicer } from "./pi-slicer.ts";
+import { assertWorkdirIsolated, ensureWorkdir } from "./flow-run.ts";
 
 /**
  * Compute a track's pre-flight cost estimate from its slice set.
@@ -38,12 +38,6 @@ export function buildPlanPorts(
     repo: config.repo,
     workdir: config.workdir,
     defaultBranch: config.defaultBranch,
-  });
-  const slicer = new PiSlicer({
-    repo: config.repo,
-    workdir: config.workdir,
-    model: config.models.slice,
-    credentials,
   });
   const planReviewer = new PiPlanReviewer({
     repo: config.repo,
@@ -77,8 +71,8 @@ export interface PlanFlowInput {
 export interface PlanFlowOutput {
   /** The created (or deduped) child slice issue numbers, in plan order. */
   childIds: number[];
-  /** The acceptance item's issue number. */
-  acceptanceId: number;
+  /** The acceptance item's issue number, or undefined when none exists. */
+  acceptanceId: number | undefined;
   /** The plan gate result. */
   gate: "clear" | "escalate";
   /** Named risks (non-empty only for escalate). */
@@ -123,12 +117,10 @@ export async function runPlan(input: PlanFlowInput): Promise<PlanFlowOutput> {
   const credentials = new FileCredentialStore(credentialsPath);
   const ports = buildPlanPorts(input.config, credentials);
 
-  // Ensure the workdir is a clone of the repo.
-  if (!existsSync(workdir)) {
-    // clone the repo into workdir
-    const { $ } = await import("bun");
-    await $`gh repo clone ${input.config.repo} ${workdir}`.quiet();
-  }
+  // Fail fast if the sandbox is nested in the operator's repo (leak guard).
+  assertWorkdirIsolated(workdir, process.cwd());
+  // Ensure the workdir is a fresh clone of the repo (clone once, else fetch).
+  await ensureWorkdir(input.config.repo, workdir);
 
   const opts = {
     reviewerIterationCap: input.config.reviewerIterationCap,
@@ -166,7 +158,7 @@ export async function runPlan(input: PlanFlowInput): Promise<PlanFlowOutput> {
     console.error(`Plan gate escalated: ${gate.risks.join("; ")}`);
     return {
       childIds: sliceResult.childIds,
-      acceptanceId: sliceResult.acceptanceId ?? 0,
+      acceptanceId: sliceResult.acceptanceId,
       gate: "escalate",
       risks: gate.risks,
     };
@@ -175,7 +167,7 @@ export async function runPlan(input: PlanFlowInput): Promise<PlanFlowOutput> {
   console.error("Plan gate cleared. Track branch created.");
   return {
     childIds: sliceResult.childIds,
-    acceptanceId: sliceResult.acceptanceId ?? 0,
+    acceptanceId: sliceResult.acceptanceId,
     gate: "clear",
     risks: [],
     costEstimate: gate.costEstimate,

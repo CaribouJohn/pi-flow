@@ -76,7 +76,7 @@ export function buildPorts(config: FlowdConfig, credentials: CredentialStore): O
 }
 
 /** Ensure the workdir is a clone of the repo (clone once, else fetch), with deps installed. */
-async function ensureWorkdir(repo: string, workdir: string): Promise<void> {
+export async function ensureWorkdir(repo: string, workdir: string): Promise<void> {
   if (existsSync(workdir)) {
     await $`git -C ${workdir} fetch origin`.quiet();
   } else {
