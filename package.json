@@ -5,8 +5,8 @@
   "type": "module",
   "workspaces": ["packages/*"],
   "scripts": {
-    "lint": "biome check packages",
-    "format": "biome check --write packages",
+    "lint": "biome check packages scripts",
+    "format": "biome check --write packages scripts",
     "typecheck": "tsc --noEmit",
     "test": "bun test packages",
     "verify": "bun run lint && bun run typecheck && bun run test",
