@@ -14,8 +14,8 @@ import { type CodingSessionFactory, realCheckout, realGh, realSessionFactory } f
  * the reviewer from mutating the code it judges.
  */
 
-/** Read-only built-in tools for the reviewer (no file mutation, no shell). */
-export const REVIEWER_TOOLS = ["read", "grep"] as const;
+/** Read-only built-in tools for the reviewer (no write/edit/bash — can't mutate). */
+export const REVIEWER_TOOLS = ["read", "grep", "find", "ls"] as const;
 
 export interface PiReviewerOptions {
   repo: string;
@@ -53,6 +53,9 @@ export class PiReviewer {
     }
     await this.checkout(this.workdir, ctx.branch);
     const diff = await this.fetchDiff(ctx.sliceId);
+    if (diff.length === 0) {
+      throw new Error(`no diff to review for slice #${ctx.sliceId} (empty PR diff)`);
+    }
 
     // The reviewer reports its decision by calling this tool; we capture it.
     let captured: Verdict | null = null;
