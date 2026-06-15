@@ -81,9 +81,14 @@ describe("runTrack — review changes loop (S6a), bounded", () => {
     expect(result.outcome).toBe("fixpoint");
     expect(flow.counts.review).toEqual([10, 10]); // two reviews
     expect(flow.counts.merged).toEqual([10]);
+    // the slice is brought up to date with the track before merging (bug #6).
+    expect(flow.counts.refreshed).toContain(10);
     // re-implement carried the prior findings back to the implementer.
     const reimplement = flow.counts.implement[1];
     expect(reimplement?.priorFindings).toEqual(["fix the edge case"]);
+    // the re-implementation is published to origin BEFORE re-review, so the
+    // reviewer sees the fix and not the original code (bug #5 regression guard).
+    expect(flow.counts.pushed).toContain(10);
     // the verdict + findings are posted to the tracker.
     expect(
       flow.comments.some(
@@ -110,6 +115,22 @@ describe("runTrack — review changes loop (S6a), bounded", () => {
     expect(result.parkedReason).toContain("after 2 review(s)");
     expect(flow.counts.review).toEqual([10, 10]); // capped at 2
     expect(flow.counts.merged).toEqual([]); // never merged
+    expect(flow.slice(10).closed).toBe(false);
+  });
+
+  test("a stale slice that conflicts with the track parks instead of merging (bug #6)", async () => {
+    const flow = makeFakeFlow({
+      slices: [{ id: 10 }],
+      reviewVerdicts: { 10: [{ decision: "APPROVE", findings: [] }] },
+      refreshConflictSlices: [10], // refreshSliceFromTrack returns false
+    });
+
+    const result = await runTrack(flow.ports, 1, OPTS);
+
+    expect(result.outcome).toBe("parked");
+    expect(result.parkedReason).toContain("merge conflict");
+    expect(flow.counts.refreshed).toContain(10); // attempted the refresh
+    expect(flow.counts.merged).toEqual([]); // never merged past the conflict
     expect(flow.slice(10).closed).toBe(false);
   });
 });
@@ -144,10 +165,11 @@ describe("runTrack — idempotency", () => {
 
 describe("decide — pure scheduler", () => {
   const base = (over: Partial<World["slices"][number]>): World => ({
-    track: { id: 1, branch: "track/test" },
+    track: { id: 1, branch: "track/test", role: "tracking" },
     slices: [
       {
         id: 10,
+        title: "test-slice",
         role: "ready-for-agent",
         review: "agent",
         dependsOn: [],

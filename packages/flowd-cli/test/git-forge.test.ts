@@ -13,11 +13,15 @@ function makeFake(opts?: {
   lsRemote?: string;
   prCreate?: string;
   prList?: string;
+  /** What `git branch --list <name>` returns (non-empty ⇒ the branch exists locally). */
+  localBranch?: string;
 }) {
   const calls: { cmd: string; args: string[]; cwd?: string }[] = [];
   const run: CmdRunner = async (cmd, args, o) => {
     calls.push({ cmd, args, cwd: o?.cwd });
     if (cmd === "git" && args[0] === "ls-remote") return opts?.lsRemote ?? "";
+    if (cmd === "git" && args[0] === "branch" && args[1] === "--list")
+      return opts?.localBranch ?? "";
     if (cmd === "gh" && args[0] === "pr" && args[1] === "create")
       return opts?.prCreate ?? "https://github.com/o/r/pull/200\n";
     if (cmd === "gh" && args[0] === "pr" && args[1] === "view")
@@ -91,11 +95,48 @@ describe("GitForgeAdapter — git ops run in the workdir", () => {
     expect(calls.every((c) => c.cmd !== "git" || c.cwd === "/wd")).toBe(true);
   });
 
-  test("createSliceBranch checks out slice/<id> off the track branch", async () => {
-    const { run, calls } = makeFake();
+  test("createSliceBranch creates slice/<id> off the track branch when it doesn't exist", async () => {
+    const { run, calls } = makeFake(); // git branch --list → "" ⇒ new
     const branch = await new GitForgeAdapter(OPTS(run)).createSliceBranch(2, "track/x");
     expect(branch).toBe("slice/2");
-    expect(calls.map((c) => c.args.join(" "))).toContain("checkout -B slice/2");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout track/x");
+    expect(git).toContain("checkout -b slice/2"); // -b (create), not -B (reset)
+  });
+
+  test("createSliceBranch REUSES an existing slice branch — never -B-resets unpushed work (§8.8)", async () => {
+    const { run, calls } = makeFake({ localBranch: "  slice/2\n" }); // exists locally
+    const branch = await new GitForgeAdapter(OPTS(run)).createSliceBranch(2, "track/x");
+    expect(branch).toBe("slice/2");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout slice/2"); // plain checkout — keeps prior commits
+    expect(git.some((g) => g.includes("-B slice/2"))).toBe(false); // never force-reset
+    expect(git.some((g) => g.includes("-b slice/2"))).toBe(false); // never recreate
+  });
+
+  test("createTrackBranch creates the branch off the default branch when absent", async () => {
+    const { run, calls } = makeFake(); // not on remote, not local
+    await new GitForgeAdapter(OPTS(run)).createTrackBranch("track/x");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout -b track/x origin/main");
+    expect(git).toContain("push -u origin track/x");
+  });
+
+  test("createTrackBranch is a no-op when the branch already exists on origin (§8.8)", async () => {
+    const { run, calls } = makeFake({ lsRemote: "abc\trefs/heads/track/x" });
+    await new GitForgeAdapter(OPTS(run)).createTrackBranch("track/x");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git.some((g) => g.startsWith("checkout"))).toBe(false); // never created
+    expect(git.some((g) => g.startsWith("push"))).toBe(false); // never pushed
+  });
+
+  test("createTrackBranch REUSES a local branch from a prior failed push (no -b crash)", async () => {
+    const { run, calls } = makeFake({ localBranch: "  track/x\n" }); // local exists, not on remote
+    await new GitForgeAdapter(OPTS(run)).createTrackBranch("track/x");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout track/x"); // plain checkout, not -b
+    expect(git.some((g) => g.includes("-b track/x"))).toBe(false);
+    expect(git).toContain("push -u origin track/x");
   });
 
   test("getSliceBranch reflects ls-remote", async () => {
@@ -115,6 +156,37 @@ describe("GitForgeAdapter — PRs", () => {
     const create = calls.find((c) => c.args[1] === "create");
     expect(create?.args).toContain("--base");
     expect(create?.args).toContain("track/x");
+  });
+
+  test("pushSlice publishes the slice branch to origin (S6a)", async () => {
+    const { run, calls } = makeFake();
+    await new GitForgeAdapter(OPTS(run)).pushSlice(2);
+    expect(calls.map((c) => c.args.join(" "))).toContain("push origin slice/2");
+  });
+
+  test("refreshSliceFromTrack merges the track into the slice and pushes (S7)", async () => {
+    const { run, calls } = makeFake();
+    const ok = await new GitForgeAdapter(OPTS(run)).refreshSliceFromTrack(2, "track/x");
+    expect(ok).toBe(true);
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout -B slice/2 origin/slice/2"); // sync to PR head (picks up remote fixes)
+    expect(git).toContain("merge origin/track/x --no-edit");
+    expect(git).toContain("push origin slice/2");
+  });
+
+  test("refreshSliceFromTrack aborts + returns false on conflict (parks, never pushes)", async () => {
+    const calls: string[][] = [];
+    const run: CmdRunner = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "git" && args[0] === "merge" && args[1] !== "--abort") {
+        throw new Error("CONFLICT (content): merge conflict");
+      }
+      return "";
+    };
+    const ok = await new GitForgeAdapter(OPTS(run)).refreshSliceFromTrack(2, "track/x");
+    expect(ok).toBe(false);
+    expect(calls).toContainEqual(["git", "merge", "--abort"]); // workdir recovered
+    expect(calls.some((c) => c[0] === "git" && c[1] === "push")).toBe(false); // never pushed
   });
 
   test("mergePr merges a track-based PR with --squash", async () => {

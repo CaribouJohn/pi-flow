@@ -137,7 +137,7 @@ export async function runTrack(
   }
 }
 
-async function readWorld(ports: OrchestratorPorts, track: Track): Promise<World> {
+export async function readWorld(ports: OrchestratorPorts, track: Track): Promise<World> {
   const trackerSlices = await ports.tracker.listSlices(track.id);
   const slices: Slice[] = await Promise.all(
     trackerSlices.map(async (ts) => ({
@@ -182,7 +182,15 @@ async function apply(
 
     case "merge": {
       const pr = requirePr(slice, "merge");
-      // Invariant #3 — never merge past a red gate. Re-check at merge time.
+      // Bring the slice up to date with the track first: siblings may have
+      // merged during this run, leaving it stale (its merge commit can't be
+      // created). A conflict can't be auto-resolved — park for a human.
+      const fresh = await ports.forge.refreshSliceFromTrack(slice.id, world.track.branch);
+      if (!fresh) {
+        return { park: "merge conflict with the track branch — needs manual resolution" };
+      }
+      // Invariant #3 — never merge past a red gate. Re-check after the refresh
+      // (the track-merge may have broken the build).
       const gate = await ports.verify.run(slice.id);
       if (!gate.green) return { park: redGate("verify gate red at merge", gate.output) };
       await ports.forge.mergePr(pr.number);
@@ -217,6 +225,9 @@ async function implementSlice(
   }
 
   if (kind === "reimplement" && slice.pr !== null) {
+    // Publish the re-implementation to origin BEFORE reopening — otherwise the
+    // PR diff stays at the original code and the reviewer never sees the fix.
+    await ports.forge.pushSlice(slice.id);
     await ports.forge.reopenForReview(slice.pr.number);
     return { detail: `re-implemented; PR #${slice.pr.number} re-opened for review` };
   }
@@ -246,6 +257,6 @@ function redGate(reason: string, output?: string): string {
   return output ? `${reason}: ${output}` : reason;
 }
 
-function disclaim(opts: RunOptions, body: string): string {
+export function disclaim(opts: RunOptions, body: string): string {
   return opts.aiDisclaimer ? `${opts.aiDisclaimer}\n\n${body}` : body;
 }

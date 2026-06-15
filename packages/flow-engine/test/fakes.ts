@@ -6,9 +6,12 @@
 import type {
   AgentContext,
   AgentPort,
+  Category,
+  CreateItemParams,
   Effort,
   ForgePort,
   OrchestratorPorts,
+  PlanReviewVerdict,
   PullRequest,
   ReviewPolicy,
   Role,
@@ -21,6 +24,8 @@ import type {
 
 export interface FakeSliceSpec {
   id: number;
+  /** Item title. Defaults to "slice-<id>" if omitted. */
+  title?: string;
   role?: Role;
   effort?: Effort;
   review?: ReviewPolicy;
@@ -32,15 +37,25 @@ export interface FakeSliceSpec {
 export interface FakeConfig {
   trackId?: number;
   trackBranch?: string;
+  /** The parent item's role. Defaults to `tracking` for legacy tracks. */
+  trackRole?: Role;
   slices: FakeSliceSpec[];
   /** Per-slice review verdict queue; defaults to APPROVE when exhausted. */
   reviewVerdicts?: Record<number, Verdict[]>;
   /** Per-slice verify result queue; defaults to green when exhausted. */
   verifyResults?: Record<number, boolean[]>;
+  /** Plan-review agent verdict to return. Omit to simulate a missing verdict (escalate). */
+  planReviewVerdict?: PlanReviewVerdict;
+  /** If set, planReview throws instead of returning a verdict (simulate agent failure). */
+  planReviewError?: Error;
+  /** Slice ids whose refreshSliceFromTrack returns false (simulate a merge conflict). */
+  refreshConflictSlices?: number[];
 }
 
 interface Rec {
   id: number;
+  title: string;
+  body: string;
   role: Role;
   effort?: Effort;
   review: ReviewPolicy;
@@ -55,6 +70,8 @@ export interface FakeFlow {
   ports: OrchestratorPorts;
   /** Current state of a slice, for assertions. */
   slice(id: number): Rec;
+  /** The parent track's mutable role, for assertions after plan-gate mutations. */
+  track: Track;
   comments: { id: number; body: string }[];
   counts: {
     driftRefresh: number;
@@ -62,6 +79,20 @@ export interface FakeFlow {
     review: number[];
     merged: number[];
     deletedBranches: string[];
+    /** Slice ids whose branch was pushed to origin (S6a re-implement). */
+    pushed: number[];
+    /** Slice ids refreshed against the track before merge (S7). */
+    refreshed: number[];
+    /** Track branches created by createTrackBranch (idempotent). */
+    createTrackBranch: string[];
+    /** Role changes made via setRole: (itemId, newRole). */
+    roleChanges: { id: number; role: Role }[];
+    /** planReview calls to the agent. */
+    planReview: number[];
+    /** Items created via createItem: (parentId, title, newId). */
+    createdItems: { parentId: number; title: string; id: number; role: Role }[];
+    /** Dependency writes via setDependencies: (itemId, dependsOn[]). */
+    dependencyWrites: { id: number; dependsOn: number[] }[];
   };
 }
 
@@ -71,6 +102,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
   const track: Track = {
     id: config.trackId ?? 1,
     branch: config.trackBranch ?? "track/test",
+    role: config.trackRole ?? "tracking",
   };
 
   const recs = new Map<number, Rec>(
@@ -78,6 +110,8 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       s.id,
       {
         id: s.id,
+        title: s.title ?? `slice-${s.id}`,
+        body: `## Brief\n\nFake body for slice ${s.id}\n\nParent: #${config.trackId ?? 1}`,
         role: s.role ?? "ready-for-agent",
         effort: s.effort,
         review: s.review ?? "agent",
@@ -104,6 +138,13 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     review: [],
     merged: [],
     deletedBranches: [],
+    pushed: [],
+    refreshed: [],
+    createTrackBranch: [],
+    roleChanges: [],
+    planReview: [],
+    createdItems: [],
+    dependencyWrites: [],
   };
   let prCounter = 100;
 
@@ -123,6 +164,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     listSlices: async (): Promise<TrackerSlice[]> =>
       [...recs.values()].map((r) => ({
         id: r.id,
+        title: r.title,
         role: r.role,
         effort: r.effort,
         review: r.review,
@@ -138,6 +180,42 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     },
     comment: async (id, body) => {
       comments.push({ id, body });
+    },
+    setRole: async (itemId, role) => {
+      counts.roleChanges.push({ id: itemId, role });
+      // Only mutate track.role when the item is the track parent itself.
+      if (itemId === track.id) track.role = role;
+    },
+    createItem: async (params: CreateItemParams): Promise<number> => {
+      const newId = Math.max(100, ...recs.keys()) + 1;
+      recs.set(newId, {
+        id: newId,
+        title: params.title,
+        body: params.body,
+        role: params.role,
+        effort: params.effort,
+        review: params.review,
+        dependsOn: [],
+        assignee: null,
+        closed: false,
+        branch: null,
+        pr: null,
+      });
+      counts.createdItems.push({
+        parentId: params.parentId,
+        title: params.title,
+        id: newId,
+        role: params.role,
+      });
+      return newId;
+    },
+    setDependencies: async (itemId, dependsOn) => {
+      const rec = must(itemId);
+      rec.dependsOn = [...dependsOn];
+      counts.dependencyWrites.push({ id: itemId, dependsOn: [...dependsOn] });
+    },
+    getItemBody: async (itemId) => {
+      return must(itemId).body;
     },
   };
 
@@ -157,6 +235,9 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       must(id).pr = pr;
       return { ...pr };
     },
+    pushSlice: async (sliceId) => {
+      counts.pushed.push(sliceId);
+    },
     recordReviewVerdict: async (prNumber, verdict) => {
       const rec = byPr(prNumber);
       if (rec.pr === null) throw new Error("fake: PR vanished");
@@ -168,12 +249,19 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       const rec = byPr(prNumber);
       if (rec.pr !== null) rec.pr.status = "open";
     },
+    refreshSliceFromTrack: async (sliceId) => {
+      counts.refreshed.push(sliceId);
+      return !(config.refreshConflictSlices ?? []).includes(sliceId);
+    },
     mergePr: async (prNumber) => {
       const rec = byPr(prNumber);
       counts.merged.push(rec.id);
     },
     deleteBranch: async (branch) => {
       counts.deletedBranches.push(branch);
+    },
+    createTrackBranch: async (branch) => {
+      counts.createTrackBranch.push(branch);
     },
   };
 
@@ -185,6 +273,17 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       counts.review.push(ctx.sliceId);
       return reviewQueues.get(ctx.sliceId)?.shift() ?? APPROVE;
     },
+    planReview: async (trackId): Promise<PlanReviewVerdict> => {
+      counts.planReview.push(trackId);
+      if (config.planReviewError) throw config.planReviewError;
+      if (config.planReviewVerdict === undefined) {
+        throw new Error("fake: no plan-review verdict configured");
+      }
+      // The "agent returned null / missing verdict" path is exercised via
+      // `planReviewError` (throw → caught by runPlanGate → combineVerdict(null))
+      // and directly in plan-review.test.ts; no separate null branch needed.
+      return config.planReviewVerdict;
+    },
   };
 
   const verify: VerifyGatePort = {
@@ -194,6 +293,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
   return {
     ports: { tracker, forge, agent, verify },
     slice: must,
+    track,
     comments,
     counts,
   };

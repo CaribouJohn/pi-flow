@@ -1,4 +1,5 @@
 import type {
+  CreateItemParams,
   Effort,
   ReviewPolicy,
   Role,
@@ -38,6 +39,7 @@ const ROLE_LABELS: readonly Role[] = [
 
 interface GhIssue {
   number: number;
+  title: string;
   body: string | null;
   state: string;
   labels: { name: string }[];
@@ -63,7 +65,23 @@ export class GitHubTrackerAdapter implements TrackerPort {
   }
 
   async getTrack(trackId: number): Promise<Track> {
-    return { id: trackId, branch: this.trackBranch };
+    const role = await this.getParentRole(trackId);
+    return { id: trackId, branch: this.trackBranch, role };
+  }
+
+  /** Read the parent issue's role label. */
+  private async getParentRole(trackId: number): Promise<Role> {
+    const out = await this.run([
+      "issue",
+      "view",
+      String(trackId),
+      "--repo",
+      this.repo,
+      "--json",
+      "labels",
+    ]);
+    const labels = (JSON.parse(out) as { labels: { name: string }[] }).labels.map((l) => l.name);
+    return parseRole(labels) ?? "needs-triage";
   }
 
   async listSlices(trackId: number): Promise<TrackerSlice[]> {
@@ -77,7 +95,7 @@ export class GitHubTrackerAdapter implements TrackerPort {
       "--limit",
       "200",
       "--json",
-      "number,body,labels,assignees,state",
+      "number,title,body,labels,assignees,state",
     ]);
     const issues = JSON.parse(out) as GhIssue[];
     const slices: TrackerSlice[] = [];
@@ -100,9 +118,85 @@ export class GitHubTrackerAdapter implements TrackerPort {
   async comment(itemId: number, body: string): Promise<void> {
     await this.run(["issue", "comment", String(itemId), "--repo", this.repo, "--body", body]);
   }
+
+  async createItem(params: CreateItemParams): Promise<number> {
+    // Labels: role + category + (effort) + review — the profile's 1:1 strings.
+    const labels: string[] = [params.role, params.category];
+    if (params.effort) labels.push(`effort:${params.effort}`);
+    labels.push(`review:${params.review}`);
+    const args = [
+      "issue",
+      "create",
+      "--repo",
+      this.repo,
+      "--title",
+      params.title,
+      "--body",
+      params.body,
+    ];
+    for (const label of labels) {
+      args.push("--label", label);
+    }
+    return parseIssueNumber(await this.run(args));
+  }
+
+  async setDependencies(itemId: number, dependsOn: number[]): Promise<void> {
+    if (dependsOn.length === 0) return; // nothing to write
+    // Append a `## Blocked by` section to the body (the form parseDependsOn reads).
+    const body = (await this.getItemBody(itemId)).trim();
+    const section = ["## Blocked by", ...dependsOn.map((n) => `- #${n}`)].join("\n");
+    const newBody = body.length > 0 ? `${body}\n\n${section}\n` : `${section}\n`;
+    await this.run(["issue", "edit", String(itemId), "--repo", this.repo, "--body", newBody]);
+  }
+
+  async getItemBody(itemId: number): Promise<string> {
+    const out = await this.run([
+      "issue",
+      "view",
+      String(itemId),
+      "--repo",
+      this.repo,
+      "--json",
+      "body",
+    ]);
+    return (JSON.parse(out) as { body: string | null }).body ?? "";
+  }
+
+  async setRole(itemId: number, role: Role): Promise<void> {
+    // Remove all existing role labels, then add the target. A remove can fail
+    // simply because the label isn't present (expected) — but it can also fail
+    // on a real error (network/auth), which combined with a succeeding add
+    // would leave a corrupted multi-role state. Don't swallow silently: log so
+    // the failure is visible rather than producing a silent inconsistency.
+    for (const r of ROLE_LABELS) {
+      await this.run([
+        "issue",
+        "edit",
+        String(itemId),
+        "--repo",
+        this.repo,
+        "--remove-label",
+        r,
+      ]).catch((err) => {
+        console.warn(
+          `[github-tracker] setRole: removing label "${r}" from #${itemId} failed (ignored): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
+    }
+    await this.run(["issue", "edit", String(itemId), "--repo", this.repo, "--add-label", role]);
+  }
 }
 
 // --- pure parsers (unit-tested directly) ---
+
+/** Parse the issue number from `gh issue create` output (the trailing issue URL). */
+export function parseIssueNumber(ghCreateOutput: string): number {
+  const n = Number(ghCreateOutput.trim().split("/").pop());
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`could not parse issue number from: ${ghCreateOutput.trim()}`);
+  }
+  return n;
+}
 
 function mapIssueToSlice(issue: GhIssue): TrackerSlice | null {
   const labels = issue.labels.map((l) => l.name);
@@ -110,6 +204,7 @@ function mapIssueToSlice(issue: GhIssue): TrackerSlice | null {
   if (role === undefined) return null;
   return {
     id: issue.number,
+    title: issue.title,
     role,
     effort: parseEffort(labels),
     review: parseReview(labels),

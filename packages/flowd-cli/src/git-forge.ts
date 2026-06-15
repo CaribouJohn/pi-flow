@@ -102,13 +102,55 @@ export class GitForgeAdapter implements ForgePort {
     return prFromMarkers(pr);
   }
 
-  /** Create the slice branch off the track branch (S2). Not pushed until openPr. */
+  /**
+   * Create the slice branch off the track branch (S2), or reuse an existing one.
+   *
+   * Idempotent (§8.8): a slice branch may already carry prior, *unpushed* work
+   * from a run that parked before the PR was pushed (e.g. a red verify gate on
+   * the first implement attempt). Reuse it — NEVER `-B`-reset it, which would
+   * silently destroy that committed work and then trip the "no changes" guard.
+   * Only the genuinely-new case branches fresh off the track branch. Not pushed
+   * until openPr.
+   */
   async createSliceBranch(sliceId: number, fromBranch: string): Promise<string> {
     const branch = sliceBranch(sliceId);
     await this.git(["fetch", "origin"]);
-    await this.git(["checkout", fromBranch]);
-    await this.git(["checkout", "-B", branch]);
+    const exists = (await this.git(["branch", "--list", branch])).trim().length > 0;
+    if (exists) {
+      await this.git(["checkout", branch]);
+    } else {
+      await this.git(["checkout", fromBranch]);
+      await this.git(["checkout", "-b", branch]);
+    }
     return branch;
+  }
+
+  /** Push the slice branch's latest commits to origin (S6a re-implement). */
+  async pushSlice(sliceId: number): Promise<void> {
+    await this.git(["push", "origin", sliceBranch(sliceId)]);
+  }
+
+  /**
+   * Merge the track branch into the slice branch and push (S7 pre-merge), so a
+   * slice that went stale while siblings merged this run can still merge. On
+   * conflict, abort (leaving the workdir clean) and return false → the slice
+   * parks for manual resolution rather than crashing the run.
+   */
+  async refreshSliceFromTrack(sliceId: number, trackBranch: string): Promise<boolean> {
+    const branch = sliceBranch(sliceId);
+    await this.git(["fetch", "origin"]);
+    // Sync local to the PR head on origin first — this picks up any *external*
+    // conflict resolution (e.g. a maintainer or bot fixing the PR remotely). By
+    // S7 all slice work is pushed, so resetting local to origin loses nothing.
+    await this.git(["checkout", "-B", branch, `origin/${branch}`]);
+    try {
+      await this.git(["merge", `origin/${trackBranch}`, "--no-edit"]);
+    } catch {
+      await this.git(["merge", "--abort"]).catch(() => {});
+      return false;
+    }
+    await this.git(["push", "origin", branch]);
+    return true;
   }
 
   /** Open the slice PR with base = the track branch (S5). Idempotent (§8.8). */
@@ -189,6 +231,25 @@ export class GitForgeAdapter implements ForgePort {
     await this.run("git", ["push", "origin", "--delete", branch], { cwd: this.workdir }).catch(
       (err) => console.warn(`[git-forge] deleteBranch(${branch}) failed (ignored):`, err),
     );
+  }
+
+  /**
+   * Create the track branch off the default branch (T13). Idempotent: if the
+   * branch already exists on origin this is a no-op (SPEC §8.8). If a prior run
+   * created it locally but failed to push, reuse the local branch rather than
+   * crashing on `checkout -b` (same lesson as createSliceBranch).
+   */
+  async createTrackBranch(branch: string): Promise<void> {
+    await this.git(["fetch", "origin"]);
+    const onRemote = (await this.git(["ls-remote", "--heads", "origin", branch])).trim().length > 0;
+    if (onRemote) return;
+    const onLocal = (await this.git(["branch", "--list", branch])).trim().length > 0;
+    if (onLocal) {
+      await this.git(["checkout", branch]);
+    } else {
+      await this.git(["checkout", "-b", branch, `origin/${this.defaultBranch}`]);
+    }
+    await this.git(["push", "-u", "origin", branch]);
   }
 }
 

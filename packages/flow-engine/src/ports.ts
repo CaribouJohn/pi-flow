@@ -4,7 +4,17 @@
  * in-memory test fakes implement them. Keeping the engine behind ports is what
  * lets it stay framework-free (ADR-0016) and unit-testable (SPEC §8.9).
  */
-import type { PullRequest, Track, TrackerSlice, Verdict } from "./domain.ts";
+import type {
+  Category,
+  Effort,
+  PlanReviewVerdict,
+  PullRequest,
+  ReviewPolicy,
+  Role,
+  Track,
+  TrackerSlice,
+  Verdict,
+} from "./domain.ts";
 
 /** Tracker CRUD + dependency parsing (SPEC §6.1). Returns tracker-owned fields. */
 export interface TrackerPort {
@@ -15,6 +25,25 @@ export interface TrackerPort {
   closeSlice(sliceId: number): Promise<void>;
   /** Post a comment (carrying the profile's AI disclaimer). */
   comment(itemId: number, body: string): Promise<void>;
+  /** Set the role/label on an item (for plan-gate advance, T13). */
+  setRole(itemId: number, role: Role): Promise<void>;
+  /** Create a child item under a parent. Returns the new item's id. */
+  createItem(params: CreateItemParams): Promise<number>;
+  /** Write the `## Blocked by` dependency section into an item's body. */
+  setDependencies(itemId: number, dependsOn: number[]): Promise<void>;
+  /** Read an item's body text (for stable-identity dedup). */
+  getItemBody(itemId: number): Promise<string>;
+}
+
+/** Parameters for `createItem` — the fields the writer sets on a new child. */
+export interface CreateItemParams {
+  parentId: number;
+  role: Role;
+  title: string;
+  body: string;
+  effort?: Effort;
+  review: ReviewPolicy;
+  category: Category;
 }
 
 /** Git/forge ops, scoped so the engine can never merge `main` (invariant #1, #6). */
@@ -27,13 +56,33 @@ export interface ForgePort {
   createSliceBranch(sliceId: number, fromBranch: string): Promise<string>;
   /** Open the slice PR with base = the track branch (S5). */
   openPr(sliceId: number, base: string): Promise<PullRequest>;
+  /**
+   * Push the slice branch's latest commits to origin (S6a). The implementer
+   * commits a re-implementation locally; without publishing it the PR diff (and
+   * thus the reviewer) keeps seeing the original code, so the agent can never
+   * satisfy the reviewer. Called before reopenForReview.
+   */
+  pushSlice(sliceId: number): Promise<void>;
   /** Record a review outcome: set status + increment reviewAttempts (S6). */
   recordReviewVerdict(prNumber: number, verdict: Verdict): Promise<void>;
   /** Re-open a changes-requested PR for re-review after a fix (S6a). */
   reopenForReview(prNumber: number): Promise<void>;
+  /**
+   * Bring the slice branch up to date with the track branch before merging (S7).
+   * Sibling slices may have merged into the track during this same run, leaving
+   * this slice stale → an un-creatable merge commit. Merges the track into the
+   * slice and pushes. Returns `false` if the merge conflicts (left clean via
+   * abort) — the slice then parks for manual resolution rather than crashing.
+   */
+  refreshSliceFromTrack(sliceId: number, trackBranch: string): Promise<boolean>;
   /** Merge the slice PR into its base (the track branch only) (S7). */
   mergePr(prNumber: number): Promise<void>;
   deleteBranch(branch: string): Promise<void>;
+  /**
+   * Create the track branch off `main` (T13). Idempotent: skip if the
+   * branch already exists so a re-run is a no-op (SPEC §8.8).
+   */
+  createTrackBranch(branch: string): Promise<void>;
 }
 
 /** Context handed to an agent role for one slice. */
@@ -50,6 +99,12 @@ export interface AgentPort {
   implement(ctx: AgentContext): Promise<void>;
   /** Adversarially review the slice; return a structured verdict (S6). */
   review(ctx: AgentContext): Promise<Verdict>;
+  /**
+   * Plan-review agent (T13/T14) — a separate Pi session on a *different
+   * model* than the slicer (SPEC §9 invariant #2). Returns a structured
+   * verdict the orchestrator combines with deterministic checks.
+   */
+  planReview(trackId: number): Promise<PlanReviewVerdict>;
 }
 
 /** The deterministic verify gate (S3) — the profile's must-pass command. */

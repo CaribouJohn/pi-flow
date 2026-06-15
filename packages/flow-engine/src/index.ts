@@ -12,3 +12,5 @@ export * from "./domain.ts";
 export * from "./derive.ts";
 export * from "./ports.ts";
 export * from "./orchestrator.ts";
+export * from "./plan-review.ts";
+export * from "./slice-plan.ts";
