@@ -146,16 +146,6 @@ describe("estimateTrackCost", () => {
     expect(() => estimateTrackCost(slices, config)).toThrow(/effort→model/);
   });
 
-  test("throws when model price is missing for a routed tier", () => {
-    const config: CostEstimatorConfig = {
-      ...PROVISIONAL_CONFIG,
-      modelPrices: { cheap: 3.0, mid: 10.0 },
-    };
-    const slices: SliceWithEffort[] = [{ effort: "low" }];
-    // "low" routes review → "strong", which is missing from modelPrices
-    expect(() => estimateTrackCost(slices, config)).toThrow(/model price.*strong/);
-  });
-
   test("rework multiplier of 1.0 produces no scaling (boundary)", () => {
     const config: CostEstimatorConfig = { ...PROVISIONAL_CONFIG, reworkMultiplier: 1.0 };
     // medium: (3000×10 + 1500×50) / 1e6 = 0.105

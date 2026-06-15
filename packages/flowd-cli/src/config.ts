@@ -22,8 +22,9 @@ export interface FlowdConfig {
   /** Path to the credential store JSON (provider → API key). */
   credentialsPath: string;
   models: RoleModelConfig;
-  /** All values are PROVISIONAL v1 guesses — calibration is PRD-0004. */
-  costEstimator: CostEstimatorConfig;
+  /** All values are PROVISIONAL v1 guesses — calibration is PRD-0004.
+   *  Optional: if absent, cost estimation is skipped. */
+  costEstimator?: CostEstimatorConfig;
 }
 
 export async function loadConfig(path: string): Promise<FlowdConfig> {
@@ -63,7 +64,10 @@ export function parseConfig(input: unknown): FlowdConfig {
   // Fail fast on a same-model pair (invariant #2) before any work runs.
   validateRoleModelConfig(config.models);
   // Validate cost estimator tables are complete (fail-fast misconfiguration).
-  validateCostEstimatorConfig(config.costEstimator);
+  // Only validates when present — cost estimation is skipped when absent.
+  if (config.costEstimator) {
+    validateCostEstimatorConfig(config.costEstimator);
+  }
   return config;
 }
 
@@ -94,7 +98,7 @@ function str(o: Record<string, unknown>, key: string): string {
   return v;
 }
 
-function num(o: Record<string, unknown>, key: string): number {
+export function num(o: Record<string, unknown>, key: string): number {
   const v = o[key];
   if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
     throw new Error(`flowd config: "${key}" must be a positive number`);
@@ -112,7 +116,8 @@ function int(o: Record<string, unknown>, key: string): number {
 
 // ── Cost estimator config parsing ──────────────────────────────────────────
 
-function parseCostEstimator(input: unknown): CostEstimatorConfig {
+function parseCostEstimator(input: unknown): CostEstimatorConfig | undefined {
+  if (input === undefined) return undefined;
   if (typeof input !== "object" || input === null) {
     throw new Error(
       "flowd config.costEstimator must be an object with reworkMultiplier, effortTokens, modelPrices, effortToModel",

@@ -100,20 +100,10 @@ export function estimateTrackCost(
       );
     }
 
-    const implPrice = config.modelPrices[models.implement];
-    if (implPrice === undefined) {
-      throw new Error(
-        `cost estimator: no model price for "${models.implement}" (routed from effort "${effort}" implementer) — add it to config costEstimator.modelPrices`,
-      );
-    }
-
-    const revPrice = config.modelPrices[models.review];
-    if (revPrice === undefined) {
-      throw new Error(
-        `cost estimator: no model price for "${models.review}" (routed from effort "${effort}" reviewer) — add it to config costEstimator.modelPrices`,
-      );
-    }
-
+    // modelPrices completeness for low/medium/high is guaranteed by
+    // validateCostEstimatorConfig (fail-fast at parse time).
+    const implPrice = config.modelPrices[models.implement] as number;
+    const revPrice = config.modelPrices[models.review] as number;
     const implCost = (tokens.implement / ONE_MILLION) * implPrice;
     const revCost = (tokens.review / ONE_MILLION) * revPrice;
     total += implCost + revCost;

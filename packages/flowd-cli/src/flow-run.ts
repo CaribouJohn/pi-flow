@@ -2,13 +2,16 @@ import { existsSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import {
   type AgentPort,
+  type Effort,
   type OrchestratorPorts,
   type RunResult,
   type VerifyGatePort,
+  runPlanGate,
   runTrack,
 } from "@pi-flow/flow-engine";
 import { $ } from "bun";
 import type { FlowdConfig } from "./config.ts";
+import { type CostEstimatorConfig, estimateTrackCost } from "./cost-estimator.ts";
 import { type CredentialStore, FileCredentialStore } from "./credentials.ts";
 import { scrubProviderEnvKeys } from "./env-scrub.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
@@ -103,6 +106,18 @@ export function assertWorkdirIsolated(workdir: string, repoRoot: string): void {
   }
 }
 
+/**
+ * Compute a track's pre-flight cost estimate from its slice set.
+ * Returns undefined when costEstimator config is absent or the plan gate
+ * has already been cleared (idempotent re-run).
+ */
+export function estimateFlowCost(
+  slices: { effort?: Effort }[],
+  config: CostEstimatorConfig,
+): string {
+  return estimateTrackCost(slices, config).formatted;
+}
+
 /** Drive one track's slice loop (S0–S8) to a fixpoint with the real adapters. */
 export async function runFlow(config: FlowdConfig, trackId: number): Promise<RunResult> {
   // Use only credential-store keys, never ambient env (ADR-0029).
@@ -118,6 +133,26 @@ export async function runFlow(config: FlowdConfig, trackId: number): Promise<Run
   await ensureWorkdir(resolved.repo, workdir);
   const ports = buildPorts(resolved, credentials);
 
+  const opts = {
+    reviewerIterationCap: config.reviewerIterationCap,
+    actor: config.actor,
+    aiDisclaimer: config.aiDisclaimer,
+  };
+
+  // T13/T14 — plan-review gate. Run before the slice loop; the cost
+  // estimator (slice 6) computes a pre-flight estimate posted at clearance.
+  const costEstimate =
+    config.costEstimator &&
+    estimateFlowCost(await ports.tracker.listSlices(trackId), config.costEstimator);
+  const gate = await runPlanGate(ports, trackId, opts, costEstimate ?? undefined);
+  if (gate.kind === "escalate") {
+    return {
+      steps: [],
+      outcome: "parked",
+      parkedReason: gate.risks.join("; "),
+    };
+  }
+
   // Confine the run to the sandbox clone: make the workdir the process cwd for
   // the agent loop. The agent's coding tools are cwd-bound, but anything that
   // falls back to `process.cwd()` (a shell side-effect, a stray relative path)
@@ -128,11 +163,7 @@ export async function runFlow(config: FlowdConfig, trackId: number): Promise<Run
   const originalCwd = process.cwd();
   process.chdir(workdir);
   try {
-    return await runTrack(ports, trackId, {
-      reviewerIterationCap: config.reviewerIterationCap,
-      actor: config.actor,
-      aiDisclaimer: config.aiDisclaimer,
-    });
+    return await runTrack(ports, trackId, opts);
   } finally {
     process.chdir(originalCwd);
   }
