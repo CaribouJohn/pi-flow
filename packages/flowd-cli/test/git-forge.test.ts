@@ -12,7 +12,10 @@ function makeFake(opts?: {
   prBase?: string;
   lsRemote?: string;
   prCreate?: string;
+  /** Response for `gh pr list --state open`. */
   prList?: string;
+  /** Response for `gh pr list --state merged` (defaults to "[]"). */
+  mergedPrList?: string;
   /** What `git branch --list <name>` returns (non-empty ⇒ the branch exists locally). */
   localBranch?: string;
 }) {
@@ -26,7 +29,12 @@ function makeFake(opts?: {
       return opts?.prCreate ?? "https://github.com/o/r/pull/200\n";
     if (cmd === "gh" && args[0] === "pr" && args[1] === "view")
       return JSON.stringify({ baseRefName: opts?.prBase ?? "track/x" });
-    if (cmd === "gh" && args[0] === "pr" && args[1] === "list") return opts?.prList ?? "[]";
+    if (cmd === "gh" && args[0] === "pr" && args[1] === "list") {
+      const stateIdx = args.indexOf("--state");
+      const state = stateIdx >= 0 ? args[stateIdx + 1] : "open";
+      if (state === "merged") return opts?.mergedPrList ?? "[]";
+      return opts?.prList ?? "[]";
+    }
     return "";
   };
   return { run, calls };
@@ -216,6 +224,34 @@ describe("GitForgeAdapter — PRs", () => {
     await expect(new GitForgeAdapter(OPTS(run)).openPr(2, "track/x")).rejects.toThrow(
       /could not parse PR number/,
     );
+  });
+
+  test("getSlicePr returns null when both open and merged lists are empty", async () => {
+    const { run } = makeFake(); // prList defaults to "[]", mergedPrList defaults to "[]"
+    const pr = await new GitForgeAdapter(OPTS(run)).getSlicePr(1);
+    expect(pr).toBeNull();
+  });
+
+  test("getSlicePr returns merged status when the PR was merged out-of-band (§8.8)", async () => {
+    const mergedJson = JSON.stringify([{ number: 42, baseRefName: "track/x", comments: [] }]);
+    // open list is empty; merged list has the PR
+    const { run, calls } = makeFake({ prList: "[]", mergedPrList: mergedJson });
+    const pr = await new GitForgeAdapter(OPTS(run)).getSlicePr(1);
+    expect(pr).toMatchObject({ number: 42, base: "track/x", status: "merged" });
+    // adapter queried both --state open and --state merged
+    const listCalls = calls.filter((c) => c.cmd === "gh" && c.args[1] === "list");
+    expect(listCalls.some((c) => c.args.includes("open"))).toBe(true);
+    expect(listCalls.some((c) => c.args.includes("merged"))).toBe(true);
+  });
+
+  test("getSlicePr returns the open PR without querying merged when an open PR exists", async () => {
+    const openJson = JSON.stringify([{ number: 99, baseRefName: "track/x", comments: [] }]);
+    const { run, calls } = makeFake({ prList: openJson });
+    const pr = await new GitForgeAdapter(OPTS(run)).getSlicePr(1);
+    expect(pr).toMatchObject({ number: 99, status: "open" });
+    // the merged query should NOT have been issued (short-circuit)
+    const listCalls = calls.filter((c) => c.cmd === "gh" && c.args[1] === "list");
+    expect(listCalls.some((c) => c.args.includes("merged"))).toBe(false);
   });
 });
 

@@ -84,22 +84,48 @@ export class GitForgeAdapter implements ForgePort {
   }
 
   async getSlicePr(sliceId: number): Promise<PullRequest | null> {
-    const out = await this.gh([
+    const head = sliceBranch(sliceId);
+    const openOut = await this.gh([
       "pr",
       "list",
       "--repo",
       this.repo,
       "--head",
-      sliceBranch(sliceId),
+      head,
       "--state",
       "open",
       "--json",
       "number,baseRefName,comments",
     ]);
-    const prs = JSON.parse(out) as GhPr[];
-    const pr = prs[0];
-    if (pr === undefined) return null;
-    return prFromMarkers(pr);
+    const openPrs = JSON.parse(openOut) as GhPr[];
+    if (openPrs[0] !== undefined) return prFromMarkers(openPrs[0]);
+
+    // §8.8 — also detect a PR that was merged outside the loop so the
+    // orchestrator can close the slice instead of re-implementing it.
+    const mergedOut = await this.gh([
+      "pr",
+      "list",
+      "--repo",
+      this.repo,
+      "--head",
+      head,
+      "--state",
+      "merged",
+      "--json",
+      "number,baseRefName,comments",
+    ]);
+    const mergedPrs = JSON.parse(mergedOut) as GhPr[];
+    const merged = mergedPrs[0];
+    if (merged !== undefined) {
+      return {
+        number: merged.number,
+        base: merged.baseRefName,
+        status: "merged",
+        reviewAttempts: 0,
+      };
+    }
+
+    return null;
   }
 
   /**
