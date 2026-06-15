@@ -65,7 +65,7 @@ async function ensureMainProject(): Promise<void> {
   }
   const dir = await mkdtemp(join(tmpdir(), "pf-sandbox-"));
   try {
-    await $`git clone https://github.com/${REPO}.git ${dir}`.quiet();
+    await $`gh repo clone ${REPO} ${dir}`.quiet();
     await mkdir(join(dir, "src"), { recursive: true });
     await mkdir(join(dir, "test"), { recursive: true });
     await writeFile(join(dir, "package.json"), `${JSON.stringify(PACKAGE_JSON, null, 2)}\n`);
@@ -90,6 +90,8 @@ async function ensureTrackBranch(): Promise<void> {
     return;
   }
   const main = (await $`git ls-remote https://github.com/${REPO}.git main`.text()).split(/\s+/)[0];
+  if (main === undefined || main.length === 0)
+    throw new Error(`${REPO} has no main branch to branch from`);
   await $`gh api repos/${REPO}/git/refs -f ref=${`refs/heads/${TRACK_BRANCH}`} -f sha=${main}`.quiet();
   console.log(`  track branch ${TRACK_BRANCH}: created off main`);
 }
@@ -103,6 +105,7 @@ async function ensureIssue(title: string, labels: string[], body: string): Promi
   const url =
     await $`gh issue create --repo ${REPO} --title ${title} --label ${labels.join(",")} --body ${body}`.text();
   const num = Number(url.trim().split("/").pop());
+  if (!Number.isInteger(num)) throw new Error(`could not parse issue number from: ${url.trim()}`);
   console.log(`  issue "${title}": #${num} (created)`);
   return num;
 }
