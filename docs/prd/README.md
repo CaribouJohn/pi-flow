@@ -16,13 +16,17 @@ engine before the pixels.
 
 ## The roadmap
 
+Each track is a tracker issue in `needs-grilling` — the future primary input channel.
+Grilling order is a maintainer choice (not the table order): PRD-0003 is grilled first to
+de-risk the engine before the pixels.
+
 | PRD | Track | Delivers | Status |
 | --- | --- | --- | --- |
-| **0001** | **Headless walking skeleton** | `flowd run --track <n>` drives one autonomous slice **S0–S8** (claim → `pi-coding-agent` implement → verify → PR → different-model review → merge to track branch → close) against a **sandbox** fixture. One-shot, headless. | **ready to slice** |
-| 0002 | Read-only board | Electrobun tray app + React webview: `NEEDS YOU / RUNNING / DONE` over tracker+git, click-through to the real ticket. Reuses the Hiss shell + RPC seam. Read-only. | planned |
-| 0003 | Front bookend | Embedded doc-aware **grill chat** → PRD → **auto-slice** (T12) → **agent plan-gate** (T13/T14) + cost **estimate**. Turns the human heartbeat into the primary input channel. | planned |
-| 0004 | Acceptance + identity + cost | Back bookend (A1–A3): staged track→`main` PR + in-app **Accept & merge** (your creds). **`flow-bot` principal + branch protection + keychain** (ADR-0038). Cost **meter** (actual vs estimate). | planned |
-| 0005 | Continuous daemon | Wrap the one-shot loop in the always-on **tick/poll-cadence daemon** + tray lifecycle (AFK: window closed ≠ work stops). Concurrency via worktrees; the assignee claim is the lock. | planned |
+| **0001** | **Headless walking skeleton** | `flowd run --track <n>` drives one autonomous slice **S0–S8** (claim → `pi-coding-agent` implement → verify → PR → different-model review → merge to track branch → close) against a **sandbox** fixture. One-shot, headless. | **shipped** ([#79](https://github.com/CaribouJohn/pi-flow/issues/79) → [#102](https://github.com/CaribouJohn/pi-flow/pull/102)) |
+| 0002 | Read-only board | Electrobun tray app + React webview: `NEEDS YOU / RUNNING / DONE` over tracker+git, click-through to the real ticket. Reuses the Hiss shell + RPC seam. Read-only. | needs-grilling ([#103](https://github.com/CaribouJohn/pi-flow/issues/103)) |
+| 0003 | Front bookend (headless) | **auto-slice** (T12) → **agent plan-gate** (T13/T14) + cost **estimate**, driven from the CLI over an existing PRD. The interactive grill *chat* is deferred to a later UI track (engine before pixels). | **ready to slice** ([#104](https://github.com/CaribouJohn/pi-flow/issues/104), [PRD](./0003-front-bookend-headless.md)) |
+| 0004 | Acceptance + identity + cost | Back bookend (A1–A3): staged track→`main` PR + in-app **Accept & merge** (your creds). **`flow-bot` principal + branch protection + keychain** (ADR-0038). Cost **meter** (actual vs estimate). | needs-grilling ([#105](https://github.com/CaribouJohn/pi-flow/issues/105)) |
+| 0005 | Continuous daemon | Wrap the one-shot loop in the always-on **tick/poll-cadence daemon** + tray lifecycle (AFK: window closed ≠ work stops). Concurrency via worktrees; the assignee claim is the lock. | needs-grilling ([#106](https://github.com/CaribouJohn/pi-flow/issues/106)) |
 
 Later / deferred (HARNESS-DESIGN §10): hard cost caps, daemon/dashboard process split,
 additional tracker adapters (Azure DevOps, …), in-situ CDP verification for UI slices,
