@@ -256,6 +256,34 @@ Hard-won in this repo — apply them from day one in the dashboard:
 - The escalation smell-set and the effort→model map will firm up with use (mirrors
   ADR-0036's open questions).
 
+## 10a. Lessons from dogfooding (PRD-0003)
+
+Building the front bookend *through* the harness (flowd-on-flowd) taught us things that
+shape model and operational policy. The mechanical fixes are codified in `SPEC.md`
+(§5.4/§5.5/§7/§8.8); the judgment calls live here:
+
+- **The implementer model must meet the reviewer's bar.** The different-model reviewer is
+  the safety property — and it is genuinely strong (it caught a stubbed adapter that broke a
+  real-tracker dedup, a missing sandbox-isolation guard, dead code). But a *weaker*
+  implementer cannot satisfy a *thorough* reviewer within the iteration cap: such slices
+  park for a human instead of converging. Route `implement` to a model at least as capable
+  as `review`; treat persistent REQUEST_CHANGES as a model-strength signal, not just a
+  bounded loop. The effort→model map (§4) should bias `implement` up, not down, for
+  reasoning-heavy slices.
+- **Static gates can't see integration; the live acceptance run is non-negotiable.** Unit +
+  lint + type + independent review all passed while the integrated command was broken
+  (throwing stubs only faked in tests; an invalid CLI flag). Only running the real command at
+  acceptance surfaced it. The acceptance bookend must exercise the integrated feature for
+  real (SPEC §5.5).
+- **Self-modification gotcha: config schema drift.** When a slice extends the harness's *own*
+  config contract (e.g. a new required model role), the running config goes stale and the
+  *next* run fails to parse until the operator updates it. Expect this when a tool builds
+  itself; surface it as a clear config error, and update the config as part of landing such a
+  slice.
+- **The `/flow` skill is the harness's maintenance loop.** Issues found by *operating* the
+  shipped harness are first-class input; fixing the harness runs the same triage → build →
+  review → accept loop, entered from operation. (Now a workflow in the skill.)
+
 ---
 
 ## 11. Deltas folded into `SPEC.md`

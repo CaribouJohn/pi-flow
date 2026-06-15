@@ -46,7 +46,11 @@ slices are all merged**. Let the maintainer pick one.
    See [TEMPLATES.md](TEMPLATES.md) for the brief / notes shapes.
    - `ready-for-agent` → post an agent brief; add an `effort:` label. `review:agent` is the
      **default** (the profile's reviewer-agent gate) — set `review:human` only to escalate.
-   - `ready-for-human` → brief noting why it needs a human (**implement-only**).
+   - `ready-for-human` → a leaf a human must **physically** do (judgment, external access,
+     manual/native work); brief noting why (**implement-only**). First check it isn't HITL
+     *only because a decision is undecided* — if so, **grill the decision out and it becomes
+     `ready-for-agent`** (most apparent-HITL is an unresolved decision, not human-only
+     execution; resolve it once, in a grill, and embed the answer in the brief).
    - `needs-grilling` → big **and the solution is undecided**: see *grilling handoff* below.
    - `needs-slicing` → big **but understood**: see *decompose* below.
    - `needs-info` → post the triage-notes template with questions for the reporter.
@@ -121,12 +125,44 @@ red gate.
 The **back bookend**, and the human's main touchpoint. When every slice has merged into the
 track branch:
 
-1. Present the integrated feature for the maintainer to **verify on the track branch** (the
-   in-situ harness for UI; the verify gate always).
+1. Present the integrated feature for the maintainer to **verify on the track branch**: the
+   verify gate always, the in-situ harness for UI, **and a real end-to-end exercise of the
+   integrated feature** — run the actual command / entry path, not just the gate. The verify
+   gate is unit + lint + type; it stays **green while integrated behaviour is broken** — a
+   method stubbed to throw but only ever faked in tests, an invalid CLI flag, an unwired
+   module. Static review can't catch those either. Acceptance is the only place they surface,
+   so the live run is mandatory, not optional. (Codified after a shipped feature passed every
+   gate yet failed on first real invocation — SPEC §5.5/§7.)
 2. **Accept** → the **maintainer** opens the track-branch → `main` PR and merges it (only the
    maintainer merges `main`, ADR-0001). Close the acceptance issue and the `tracking` parent.
-3. **Reject** → file a **corrective issue on the track branch** (it never reaches `main`
-   unaccepted) and keep the track open.
+   A slice whose PR was merged **out-of-band** (e.g. a maintainer/bot resolved a conflict and
+   merged it) won't have been closed by the loop — close its issue so it isn't re-picked.
+3. **Reject** → file a **corrective issue/slice on the track branch** (it never reaches
+   `main` unaccepted) and keep the track open. Conflicts a stale slice hits at merge can be
+   resolved on the slice branch (maintainer or an external agent) and the track resumed.
+
+## Workflow: bugs surfaced by operating the system (self-maintenance)
+
+Issues don't only come from reporters — **operating the delivered system is a primary input
+channel, and this skill is how what's been shipped gets maintained.** A failed run, a
+shipped feature that misbehaves, a defect the maintainer hits in use — each is a first-class
+issue. File it *with the failure evidence* (the command, the output, a repro), then triage
+it exactly like any other.
+
+The thing being operated is often **the harness/tooling itself** — fixing it is not special:
+a fix to already-shipped code is a normal `ready-for-agent` leaf (or `ready-for-human`, or a
+**corrective slice on an open track** if it belongs to work in flight), and it runs the same
+triage → (slice) → build → independent-review → accept loop, just entered from operation
+rather than a report. Two things make these correctives land cleanly:
+
+- **Carry the evidence into the issue** — the failing command + output + the repro — so the
+  agent has a concrete repro and can name a verification method (usually a regression test).
+- **A bug that only shows up live (not in the gate) needs a test that would have caught it.**
+  If unit/lint/type were green while the real behaviour was broken, the fix must add the
+  missing coverage (or, when it's irreducibly live, route the check to acceptance, §5.4 S4).
+
+This is the loop maintaining its own output — including building and repairing the harness
+through the harness.
 
 ## Workflow: what's ready to pick up (derived states)
 
