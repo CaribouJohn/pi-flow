@@ -15,8 +15,9 @@ describe("buildReviewPrompt", () => {
 });
 
 describe("PiReviewer.review", () => {
-  function reviewer(opts: { submit?: Verdict; key?: boolean }) {
+  function reviewer(opts: { submit?: Verdict; key?: boolean; submitOnCall?: number }) {
     let toolsSeen: readonly string[] | undefined;
+    let promptCalls = 0;
     const rev = new PiReviewer({
       repo: "o/r",
       workdir: "/wd",
@@ -28,11 +29,17 @@ describe("PiReviewer.review", () => {
         toolsSeen = sopts.tools as readonly string[] | undefined;
         return {
           prompt: async () => {
-            // Simulate the reviewer calling the real submit_verdict tool. Cast to
-            // a 2-arg call (the SDK's wrapped execute carries extra context args
-            // our handler ignores).
+            promptCalls++;
+            // Simulate the reviewer calling the real submit_verdict tool on the
+            // configured prompt (call 1 by default; 2 = only after the nudge).
+            // Cast to a 2-arg call (the SDK's wrapped execute carries extra
+            // context args our handler ignores).
             const tool = sopts.customTools?.[0];
-            if (opts.submit !== undefined && tool !== undefined) {
+            if (
+              opts.submit !== undefined &&
+              tool !== undefined &&
+              promptCalls === (opts.submitOnCall ?? 1)
+            ) {
               const exec = tool.execute as unknown as (id: string, p: Verdict) => Promise<unknown>;
               await exec("call-1", opts.submit);
             }
@@ -57,7 +64,15 @@ describe("PiReviewer.review", () => {
     expect(await rev.review({ sliceId: 2, branch: "slice/2" })).toEqual(v);
   });
 
-  test("fails safe to REQUEST_CHANGES when no verdict is submitted", async () => {
+  test("nudges and captures a verdict submitted only after the nudge", async () => {
+    const { rev } = reviewer({ submit: { decision: "APPROVE", findings: [] }, submitOnCall: 2 });
+    expect(await rev.review({ sliceId: 2, branch: "slice/2" })).toEqual({
+      decision: "APPROVE",
+      findings: [],
+    });
+  });
+
+  test("fails safe to REQUEST_CHANGES when no verdict is submitted even after the nudge", async () => {
     const { rev } = reviewer({});
     const r = await rev.review({ sliceId: 2, branch: "slice/2" });
     expect(r.decision).toBe("REQUEST_CHANGES");

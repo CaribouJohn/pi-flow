@@ -89,6 +89,12 @@ export class PiReviewer {
     });
     await session.prompt(buildReviewPrompt(diff));
 
+    // Some models state the verdict in prose instead of calling the tool. Nudge
+    // once: the verdict only counts if it comes through submit_verdict.
+    if (captured === null) {
+      await session.prompt(VERDICT_NUDGE);
+    }
+
     // Fail safe: a reviewer that never submitted a verdict is treated as a
     // rejection, never a silent approve (never merge past an unclear gate).
     return (
@@ -101,12 +107,22 @@ export class PiReviewer {
   }
 }
 
+/** Sent if the model answered without calling the verdict tool. */
+export const VERDICT_NUDGE =
+  "You have not recorded a verdict. Do NOT answer in prose. The ONLY way to finish " +
+  "this review is to call the `submit_verdict` tool now, with `decision` (APPROVE or " +
+  "REQUEST_CHANGES) and `findings`.";
+
 export function buildReviewPrompt(diff: string): string {
   return [
     "You are an INDEPENDENT, ADVERSARIAL code reviewer. You did NOT write this code.",
     "Investigate the change below — read the surrounding code with your tools, don't",
     "just skim the diff. Decide APPROVE or REQUEST_CHANGES; default to REQUEST_CHANGES",
-    "if anything is materially wrong. When done, call `submit_verdict` exactly once.",
+    "if anything is materially wrong.",
+    "",
+    "CRITICAL: your review is ONLY complete when you call the `submit_verdict` tool.",
+    "Do NOT write your decision as prose or a summary — it will be ignored. Call",
+    "`submit_verdict` exactly once with `decision` and `findings`.",
     "",
     "## Diff under review",
     diff,
