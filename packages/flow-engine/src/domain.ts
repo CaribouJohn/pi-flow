@@ -131,6 +131,7 @@ export interface SlicePlan {
 export interface SlicePlanResult {
   /** The created (or deduped) child slice issue numbers, in plan order. */
   childIds: number[];
-  /** The acceptance item's issue number. */
-  acceptanceId: number;
+  /** The acceptance item's issue number, or undefined when no open acceptance
+   * item exists (possible on a partial-re-run over a past-gate parent). */
+  acceptanceId: number | undefined;
 }

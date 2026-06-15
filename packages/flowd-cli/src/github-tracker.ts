@@ -39,6 +39,7 @@ const ROLE_LABELS: readonly Role[] = [
 
 interface GhIssue {
   number: number;
+  title: string;
   body: string | null;
   state: string;
   labels: { name: string }[];
@@ -94,7 +95,7 @@ export class GitHubTrackerAdapter implements TrackerPort {
       "--limit",
       "200",
       "--json",
-      "number,body,labels,assignees,state",
+      "number,title,body,labels,assignees,state",
     ]);
     const issues = JSON.parse(out) as GhIssue[];
     const slices: TrackerSlice[] = [];
@@ -174,7 +175,7 @@ function mapIssueToSlice(issue: GhIssue): TrackerSlice | null {
   if (role === undefined) return null;
   return {
     id: issue.number,
-    title: "", // Title is not in the json output of the list command — filled by the CLI layer.
+    title: issue.title,
     role,
     effort: parseEffort(labels),
     review: parseReview(labels),

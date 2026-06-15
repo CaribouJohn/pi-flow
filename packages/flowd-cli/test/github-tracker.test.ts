@@ -60,6 +60,7 @@ describe("GitHubTrackerAdapter", () => {
   const issuesJson = JSON.stringify([
     {
       number: 1,
+      title: "the tracking parent",
       body: "the tracking parent",
       state: "OPEN",
       labels: [{ name: "tracking" }, { name: "enhancement" }],
@@ -67,6 +68,7 @@ describe("GitHubTrackerAdapter", () => {
     },
     {
       number: 2,
+      title: "add add(a,b)",
       body: "## Parent\n#1\n\n## What\nadd add(a,b)",
       state: "OPEN",
       labels: [{ name: "ready-for-agent" }, { name: "effort:low" }, { name: "review:agent" }],
@@ -74,6 +76,7 @@ describe("GitHubTrackerAdapter", () => {
     },
     {
       number: 3,
+      title: "Acceptance",
       body: "## Parent\n#1\n\n## Blocked by\n- #2",
       state: "CLOSED",
       labels: [{ name: "needs-acceptance" }, { name: "review:human" }],
@@ -81,6 +84,7 @@ describe("GitHubTrackerAdapter", () => {
     },
     {
       number: 4,
+      title: "other track slice",
       body: "## Parent\n#99\nbelongs to another track",
       state: "OPEN",
       labels: [{ name: "ready-for-agent" }],

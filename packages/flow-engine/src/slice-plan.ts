@@ -142,7 +142,7 @@ export async function writeSlicePlan(
     const acceptance = existing.find((s) => s.role === "needs-acceptance" && !s.closed);
     return {
       childIds: childSlices.map((s) => s.id),
-      acceptanceId: acceptance?.id ?? 0,
+      acceptanceId: acceptance?.id,
     };
   }
 

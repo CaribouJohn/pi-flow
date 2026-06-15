@@ -343,13 +343,15 @@ describe("writeSlicePlan — happy path", () => {
 
     const result = await writeSlicePlan(flow.ports, 1, plan, OPTS);
 
-    const acceptance = flow.slice(result.acceptanceId);
+    const acceptanceId = result.acceptanceId;
+    if (acceptanceId === undefined) throw new Error("expected acceptanceId");
+    const acceptance = flow.slice(acceptanceId);
     expect(acceptance.role).toBe("needs-acceptance");
     expect(acceptance.review).toBe("human");
     expect(acceptance.closed).toBe(false);
 
     // Acceptance depends on every child.
-    const dw = flow.counts.dependencyWrites.find((w) => w.id === result.acceptanceId);
+    const dw = flow.counts.dependencyWrites.find((w) => w.id === acceptanceId);
     expect(dw).toBeDefined();
     expect(dw?.dependsOn.sort()).toEqual([...result.childIds].sort());
   });
