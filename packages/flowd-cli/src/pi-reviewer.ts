@@ -17,6 +17,9 @@ import { type CodingSessionFactory, realCheckout, realGh, realSessionFactory } f
 /** Read-only built-in tools for the reviewer (no write/edit/bash — can't mutate). */
 export const REVIEWER_TOOLS = ["read", "grep", "find", "ls"] as const;
 
+/** The reviewer's verdict tool name — MUST be in the session allowlist too. */
+export const VERDICT_TOOL = "submit_verdict";
+
 export interface PiReviewerOptions {
   repo: string;
   workdir: string;
@@ -60,7 +63,7 @@ export class PiReviewer {
     // The reviewer reports its decision by calling this tool; we capture it.
     let captured: Verdict | null = null;
     const submitVerdict = defineTool({
-      name: "submit_verdict",
+      name: VERDICT_TOOL,
       label: "Submit review verdict",
       description: "Record your final review decision. Call this exactly once when done.",
       parameters: Type.Object({
@@ -79,7 +82,9 @@ export class PiReviewer {
       model: this.model,
       apiKey,
       cwd: this.workdir,
-      tools: [...REVIEWER_TOOLS],
+      // The allowlist gates custom tools too — submit_verdict MUST be listed or
+      // the reviewer can't report a verdict (and the fail-safe would reject).
+      tools: [...REVIEWER_TOOLS, VERDICT_TOOL],
       customTools: [submitVerdict],
     });
     await session.prompt(buildReviewPrompt(diff));

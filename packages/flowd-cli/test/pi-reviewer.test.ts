@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Verdict } from "@pi-flow/flow-engine";
-import { PiReviewer, REVIEWER_TOOLS, buildReviewPrompt } from "../src/pi-reviewer.ts";
+import { PiReviewer, REVIEWER_TOOLS, VERDICT_TOOL, buildReviewPrompt } from "../src/pi-reviewer.ts";
 import { makeCredentials } from "./helpers.ts";
 
 const MODEL = { provider: "openai", id: "gpt-5" };
@@ -64,10 +64,12 @@ describe("PiReviewer.review", () => {
     expect(r.findings.join(" ")).toContain("did not submit");
   });
 
-  test("runs with read-only tools (no bash/write)", async () => {
+  test("allowlists read-only tools + submit_verdict (no bash/write)", async () => {
     const { rev, tools } = reviewer({ submit: { decision: "APPROVE", findings: [] } });
     await rev.review({ sliceId: 2, branch: "slice/2" });
-    expect(tools()).toEqual([...REVIEWER_TOOLS]);
+    // submit_verdict MUST be allowlisted or the reviewer can't report (the bug
+    // that caused "reviewer did not submit a verdict").
+    expect(tools()).toEqual([...REVIEWER_TOOLS, VERDICT_TOOL]);
     expect(tools()).not.toContain("bash");
     expect(tools()).not.toContain("write");
   });

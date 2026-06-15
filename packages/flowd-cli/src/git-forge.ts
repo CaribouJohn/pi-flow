@@ -88,7 +88,7 @@ export class GitForgeAdapter implements ForgePort {
       "--head",
       sliceBranch(sliceId),
       "--state",
-      "all",
+      "open",
       "--json",
       "number,baseRefName,comments",
     ]);
