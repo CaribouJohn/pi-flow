@@ -17,6 +17,14 @@ that verifies the deferred acceptance criteria of #86/#87/#88.
   *different* reviewer model (invariant #2). The example config uses
   `anthropic/claude-opus-4-8` (implement) + `openai/gpt-5` (review) — change the
   review model to whatever provider you have a key for.
+- **The reviewer model MUST support custom function-calling tools** — it reports
+  its verdict by calling `submit_verdict`. A model that can't (or won't) call
+  custom tools always trips the fail-safe (REQUEST_CHANGES, "did not submit a
+  verdict") and the track parks. Verified working: `deepseek` (e.g.
+  `deepseek-v4-flash`), `anthropic` Claude, native `openai`. Verified NOT working:
+  `github-copilot/gpt-5-mini` (Copilot-proxied models don't expose custom tools).
+  A known-good pair: implement `deepseek/deepseek-v4-pro`, review
+  `deepseek/deepseek-v4-flash`.
 - The sandbox repo seeded (step 2).
 
 ## 2. Seed the sandbox (idempotent)
