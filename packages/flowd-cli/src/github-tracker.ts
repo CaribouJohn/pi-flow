@@ -1,4 +1,5 @@
 import type {
+  CreateItemParams,
   Effort,
   ReviewPolicy,
   Role,
@@ -38,6 +39,7 @@ const ROLE_LABELS: readonly Role[] = [
 
 interface GhIssue {
   number: number;
+  title: string;
   body: string | null;
   state: string;
   labels: { name: string }[];
@@ -93,7 +95,7 @@ export class GitHubTrackerAdapter implements TrackerPort {
       "--limit",
       "200",
       "--json",
-      "number,body,labels,assignees,state",
+      "number,title,body,labels,assignees,state",
     ]);
     const issues = JSON.parse(out) as GhIssue[];
     const slices: TrackerSlice[] = [];
@@ -115,6 +117,29 @@ export class GitHubTrackerAdapter implements TrackerPort {
 
   async comment(itemId: number, body: string): Promise<void> {
     await this.run(["issue", "comment", String(itemId), "--repo", this.repo, "--body", body]);
+  }
+
+  async createItem(params: CreateItemParams): Promise<number> {
+    // The real implementation will use `gh issue create` — for now, stub.
+    throw new Error("GitHubTrackerAdapter.createItem not yet implemented");
+  }
+
+  async setDependencies(itemId: number, dependsOn: number[]): Promise<void> {
+    // The real implementation will write `## Blocked by` into the issue body.
+    throw new Error("GitHubTrackerAdapter.setDependencies not yet implemented");
+  }
+
+  async getItemBody(itemId: number): Promise<string> {
+    const out = await this.run([
+      "issue",
+      "view",
+      String(itemId),
+      "--repo",
+      this.repo,
+      "--json",
+      "body",
+    ]);
+    return (JSON.parse(out) as { body: string | null }).body ?? "";
   }
 
   async setRole(itemId: number, role: Role): Promise<void> {
@@ -150,6 +175,7 @@ function mapIssueToSlice(issue: GhIssue): TrackerSlice | null {
   if (role === undefined) return null;
   return {
     id: issue.number,
+    title: issue.title,
     role,
     effort: parseEffort(labels),
     review: parseReview(labels),

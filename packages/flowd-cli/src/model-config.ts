@@ -1,8 +1,9 @@
 /**
- * Minimal role→model routing for the walking skeleton: which model each role
- * agent runs on. The full per-role × effort routing table firms up later
- * (HARNESS-DESIGN §4); for now we only need the implement/review pair, and the
- * one load-bearing constraint — they must differ (SPEC invariant #2).
+ * Role→model routing: which model each role-agent runs on.
+ *
+ * The load-bearing structural constraints (SPEC invariants):
+ *   - `review !== implement` (invariant #2 — independent blind spots)
+ *   - `planReview !== slice`   (extends #2 to the plan gate — reviewer ≠ slicer)
  */
 
 export interface ModelId {
@@ -13,6 +14,8 @@ export interface ModelId {
 export interface RoleModelConfig {
   implement: ModelId;
   review: ModelId;
+  slice: ModelId;
+  planReview: ModelId;
 }
 
 // Exact match: provider and model id are case-sensitive identifiers (as the
@@ -26,14 +29,23 @@ export function formatModel(m: ModelId): string {
 }
 
 /**
- * Enforce invariant #2 structurally: the reviewer must run on a different model
- * than the implementer (independent blind spots, not just a fresh context).
+ * Enforce structural independence invariants.
+ *
+ *   - `review !== implement` (invariant #2 — independent blind spots).
+ *   - `planReview !== slice` (extends #2 to the plan gate — the reviewer must
+ *     not share a model with the slicer that produced the plan).
+ *
  * Throws loudly on a same-model config so a misconfiguration fails fast.
  */
 export function validateRoleModelConfig(config: RoleModelConfig): void {
   if (sameModel(config.implement, config.review)) {
     throw new Error(
       `reviewer model must differ from the implementer model (invariant #2): both resolve to ${formatModel(config.implement)}`,
+    );
+  }
+  if (sameModel(config.planReview, config.slice)) {
+    throw new Error(
+      `plan-review model must differ from the slicer model (independence rule): both resolve to ${formatModel(config.planReview)}`,
     );
   }
 }

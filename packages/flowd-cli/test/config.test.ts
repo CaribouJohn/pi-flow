@@ -16,6 +16,8 @@ const VALID = {
   models: {
     implement: { provider: "anthropic", id: "claude-opus-4-8" },
     review: { provider: "openai", id: "gpt-5" },
+    slice: { provider: "anthropic", id: "claude-opus-4-8" },
+    planReview: { provider: "openai", id: "gpt-5" },
   },
   costEstimator: {
     reworkMultiplier: 1.3,
@@ -46,6 +48,7 @@ describe("parseConfig", () => {
     const same = {
       ...VALID,
       models: {
+        ...VALID.models,
         implement: { provider: "anthropic", id: "claude-opus-4-8" },
         review: { provider: "anthropic", id: "claude-opus-4-8" },
       },
@@ -75,6 +78,31 @@ describe("parseConfig", () => {
     const result = parseConfig(noCe);
     expect(result.costEstimator).toBeUndefined();
     expect(result.repo).toBe("o/r");
+  });
+
+  test("rejects valid implement/review but absent slice", () => {
+    expect(() =>
+      parseConfig({
+        ...VALID,
+        models: {
+          implement: { provider: "anthropic", id: "claude-opus-4-8" },
+          review: { provider: "openai", id: "gpt-5" },
+        },
+      }),
+    ).toThrow(/slice/);
+  });
+
+  test("rejects valid implement/review/slice but absent planReview", () => {
+    expect(() =>
+      parseConfig({
+        ...VALID,
+        models: {
+          implement: { provider: "anthropic", id: "claude-opus-4-8" },
+          review: { provider: "openai", id: "gpt-5" },
+          slice: { provider: "anthropic", id: "claude-opus-4-8" },
+        },
+      }),
+    ).toThrow(/planReview/);
   });
 });
 

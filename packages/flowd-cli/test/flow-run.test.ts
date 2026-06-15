@@ -54,6 +54,8 @@ describe("buildPorts", () => {
     models: {
       implement: { provider: "anthropic", id: "claude-opus-4-8" },
       review: { provider: "openai", id: "gpt-5" },
+      slice: { provider: "anthropic", id: "claude-opus-4-8" },
+      planReview: { provider: "openai", id: "gpt-5" },
     },
     costEstimator: {
       reworkMultiplier: 1.3,
@@ -81,6 +83,7 @@ describe("buildPorts", () => {
     expect(typeof ports.forge.driftRefresh).toBe("function");
     expect(typeof ports.agent.implement).toBe("function");
     expect(typeof ports.agent.review).toBe("function");
+    expect(typeof ports.agent.planReview).toBe("function");
     expect(typeof ports.verify.run).toBe("function");
   });
 });
