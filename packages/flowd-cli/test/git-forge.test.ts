@@ -13,11 +13,15 @@ function makeFake(opts?: {
   lsRemote?: string;
   prCreate?: string;
   prList?: string;
+  /** What `git branch --list <name>` returns (non-empty ⇒ the branch exists locally). */
+  localBranch?: string;
 }) {
   const calls: { cmd: string; args: string[]; cwd?: string }[] = [];
   const run: CmdRunner = async (cmd, args, o) => {
     calls.push({ cmd, args, cwd: o?.cwd });
     if (cmd === "git" && args[0] === "ls-remote") return opts?.lsRemote ?? "";
+    if (cmd === "git" && args[0] === "branch" && args[1] === "--list")
+      return opts?.localBranch ?? "";
     if (cmd === "gh" && args[0] === "pr" && args[1] === "create")
       return opts?.prCreate ?? "https://github.com/o/r/pull/200\n";
     if (cmd === "gh" && args[0] === "pr" && args[1] === "view")
@@ -91,11 +95,23 @@ describe("GitForgeAdapter — git ops run in the workdir", () => {
     expect(calls.every((c) => c.cmd !== "git" || c.cwd === "/wd")).toBe(true);
   });
 
-  test("createSliceBranch checks out slice/<id> off the track branch", async () => {
-    const { run, calls } = makeFake();
+  test("createSliceBranch creates slice/<id> off the track branch when it doesn't exist", async () => {
+    const { run, calls } = makeFake(); // git branch --list → "" ⇒ new
     const branch = await new GitForgeAdapter(OPTS(run)).createSliceBranch(2, "track/x");
     expect(branch).toBe("slice/2");
-    expect(calls.map((c) => c.args.join(" "))).toContain("checkout -B slice/2");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout track/x");
+    expect(git).toContain("checkout -b slice/2"); // -b (create), not -B (reset)
+  });
+
+  test("createSliceBranch REUSES an existing slice branch — never -B-resets unpushed work (§8.8)", async () => {
+    const { run, calls } = makeFake({ localBranch: "  slice/2\n" }); // exists locally
+    const branch = await new GitForgeAdapter(OPTS(run)).createSliceBranch(2, "track/x");
+    expect(branch).toBe("slice/2");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout slice/2"); // plain checkout — keeps prior commits
+    expect(git.some((g) => g.includes("-B slice/2"))).toBe(false); // never force-reset
+    expect(git.some((g) => g.includes("-b slice/2"))).toBe(false); // never recreate
   });
 
   test("getSliceBranch reflects ls-remote", async () => {

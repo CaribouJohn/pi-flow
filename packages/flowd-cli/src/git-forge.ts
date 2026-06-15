@@ -102,12 +102,26 @@ export class GitForgeAdapter implements ForgePort {
     return prFromMarkers(pr);
   }
 
-  /** Create the slice branch off the track branch (S2). Not pushed until openPr. */
+  /**
+   * Create the slice branch off the track branch (S2), or reuse an existing one.
+   *
+   * Idempotent (§8.8): a slice branch may already carry prior, *unpushed* work
+   * from a run that parked before the PR was pushed (e.g. a red verify gate on
+   * the first implement attempt). Reuse it — NEVER `-B`-reset it, which would
+   * silently destroy that committed work and then trip the "no changes" guard.
+   * Only the genuinely-new case branches fresh off the track branch. Not pushed
+   * until openPr.
+   */
   async createSliceBranch(sliceId: number, fromBranch: string): Promise<string> {
     const branch = sliceBranch(sliceId);
     await this.git(["fetch", "origin"]);
-    await this.git(["checkout", fromBranch]);
-    await this.git(["checkout", "-B", branch]);
+    const exists = (await this.git(["branch", "--list", branch])).trim().length > 0;
+    if (exists) {
+      await this.git(["checkout", branch]);
+    } else {
+      await this.git(["checkout", fromBranch]);
+      await this.git(["checkout", "-b", branch]);
+    }
     return branch;
   }
 
