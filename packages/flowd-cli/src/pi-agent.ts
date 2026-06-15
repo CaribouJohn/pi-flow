@@ -94,3 +94,10 @@ export const realCommit = async (workdir: string, message: string): Promise<bool
   await $`git -C ${workdir} commit -m ${message}`.quiet();
   return true;
 };
+
+/** True if HEAD has commits the base branch (origin/<base>) doesn't — i.e. the
+ *  slice already carries an implementation (possibly from a prior run). */
+export const realHasCommitsAhead = async (workdir: string, base: string): Promise<boolean> => {
+  const count = await $`git -C ${workdir} rev-list --count ${`origin/${base}..HEAD`}`.text();
+  return count.trim() !== "0" && count.trim() !== "";
+};

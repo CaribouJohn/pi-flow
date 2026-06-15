@@ -26,6 +26,7 @@ describe("PiImplementer.implement", () => {
     const impl = new PiImplementer({
       repo: "o/r",
       workdir: "/wd",
+      trackBranch: "track/x",
       model: MODEL,
       credentials: creds,
       sessionFactory: async (opts) => {
@@ -44,6 +45,7 @@ describe("PiImplementer.implement", () => {
       checkout: async (_wd, branch) => {
         checkouts.push(branch);
       },
+      hasCommitsAhead: async () => false,
     });
     return { impl, prompts, commits, checkouts, cwd: () => sessionCwd };
   }
@@ -62,18 +64,35 @@ describe("PiImplementer.implement", () => {
     await expect(impl.implement({ sliceId: 2, branch: "slice/2" })).rejects.toThrow(/no API key/);
   });
 
-  test("throws when the implementer made no changes (empty commit)", async () => {
-    const creds = makeCredentials({ anthropic: "sk" });
+  test("throws when the slice is genuinely empty (no commit, nothing ahead)", async () => {
     const impl = new PiImplementer({
       repo: "o/r",
       workdir: "/wd",
+      trackBranch: "track/x",
       model: MODEL,
-      credentials: creds,
+      credentials: makeCredentials({ anthropic: "sk" }),
       sessionFactory: async () => ({ prompt: async () => {} }),
       gh: async () => "brief",
       commit: async () => false,
       checkout: async () => {},
+      hasCommitsAhead: async () => false,
     });
     await expect(impl.implement({ sliceId: 2, branch: "slice/2" })).rejects.toThrow(/no changes/);
+  });
+
+  test("succeeds when a prior run already implemented the slice (idempotent re-entry)", async () => {
+    const impl = new PiImplementer({
+      repo: "o/r",
+      workdir: "/wd",
+      trackBranch: "track/x",
+      model: MODEL,
+      credentials: makeCredentials({ anthropic: "sk" }),
+      sessionFactory: async () => ({ prompt: async () => {} }),
+      gh: async () => "brief",
+      commit: async () => false, // agent made no new changes — already done
+      checkout: async () => {},
+      hasCommitsAhead: async () => true, // but the branch already carries the work
+    });
+    await expect(impl.implement({ sliceId: 2, branch: "slice/2" })).resolves.toBeUndefined();
   });
 });

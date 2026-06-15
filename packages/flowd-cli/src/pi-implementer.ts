@@ -6,6 +6,7 @@ import {
   realCheckout,
   realCommit,
   realGh,
+  realHasCommitsAhead,
   realSessionFactory,
 } from "./pi-agent.ts";
 
@@ -18,12 +19,15 @@ import {
 export interface PiImplementerOptions {
   repo: string;
   workdir: string;
+  /** The track branch the slice merges into — used to detect existing work. */
+  trackBranch: string;
   model: ModelId;
   credentials: CredentialStore;
   sessionFactory?: CodingSessionFactory;
   gh?: (args: string[]) => Promise<string>;
   commit?: (workdir: string, message: string) => Promise<boolean>;
   checkout?: (workdir: string, branch: string) => Promise<void>;
+  hasCommitsAhead?: (workdir: string, base: string) => Promise<boolean>;
 }
 
 export class PiImplementer {
@@ -35,16 +39,20 @@ export class PiImplementer {
   private readonly gh: (args: string[]) => Promise<string>;
   private readonly commit: (workdir: string, message: string) => Promise<boolean>;
   private readonly checkout: (workdir: string, branch: string) => Promise<void>;
+  private readonly trackBranch: string;
+  private readonly hasCommitsAhead: (workdir: string, base: string) => Promise<boolean>;
 
   constructor(opts: PiImplementerOptions) {
     this.repo = opts.repo;
     this.workdir = opts.workdir;
+    this.trackBranch = opts.trackBranch;
     this.model = opts.model;
     this.credentials = opts.credentials;
     this.sessionFactory = opts.sessionFactory ?? realSessionFactory;
     this.gh = opts.gh ?? realGh;
     this.commit = opts.commit ?? realCommit;
     this.checkout = opts.checkout ?? realCheckout;
+    this.hasCommitsAhead = opts.hasCommitsAhead ?? realHasCommitsAhead;
   }
 
   async implement(ctx: AgentContext): Promise<void> {
@@ -63,7 +71,12 @@ export class PiImplementer {
     await session.prompt(buildImplementPrompt(brief, ctx.priorFindings));
 
     const committed = await this.commit(this.workdir, `flow-bot: implement slice #${ctx.sliceId}`);
-    if (!committed) {
+    // Success = the slice branch carries an implementation. That's true if this
+    // run committed changes OR the branch already has commits ahead of the track
+    // branch (a prior run implemented it — idempotent re-entry, SPEC §8.8). Only
+    // a genuinely empty slice (no new changes, nothing ahead) is a failure.
+    const hasWork = committed || (await this.hasCommitsAhead(this.workdir, this.trackBranch));
+    if (!hasWork) {
       throw new Error(`implementer produced no changes for slice #${ctx.sliceId}`);
     }
   }

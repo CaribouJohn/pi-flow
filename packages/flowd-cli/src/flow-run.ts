@@ -44,6 +44,7 @@ export function buildPorts(config: FlowdConfig, credentials: CredentialStore): O
   const implementer = new PiImplementer({
     repo: config.repo,
     workdir: config.workdir,
+    trackBranch: config.trackBranch,
     model: config.models.implement,
     credentials,
   });
