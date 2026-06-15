@@ -6,24 +6,21 @@ import type { ModelId } from "./model-config.ts";
 import { type CodingSessionFactory, realSessionFactory } from "./pi-agent.ts";
 
 /**
- * The slice agent (T12 LLM half) — a `pi-coding-agent` session that reads a
- * parent PRD and produces a structured `SlicePlan` via a `submit_slice_plan`
- * custom tool. The deterministic writer (`writeSlicePlan`, in flow-engine)
- * validates and creates the child Items + the acceptance Item.
+ * The slice agent (T12, the LLM half): a read-only `pi-coding-agent` session
+ * that reads the PRD + repo docs (CONTEXT.md, ADRs, the agent-ready bar) and
+ * emits a decomposition via a `submit_slice_plan` custom tool.
  *
- * The slice agent is read-only: it reads the PRD (and may inspect the repo for
- * context — file list, existing ADR decisions) but never writes code. The
- * plan-review agent (#113) runs on a *different* model to independently gate.
+ * The agent **never writes to the tracker** — it only emits the plan; the
+ * orchestrator (slice-plan.ts) does the writes (SPEC §8.4).
  */
 
-/** Built-in tools for the slicer — read-only + repo inspection (no write/bash). */
+/** Read-only built-in tools for the slicer (no write/edit/bash — can't mutate). */
 export const SLICER_TOOLS = ["read", "grep", "find", "ls"] as const;
 
-/** The slicer's verdict tool name — MUST be in the session allowlist too. */
+/** The slicer's plan tool name — MUST be in the session allowlist too. */
 export const SLICE_PLAN_TOOL = "submit_slice_plan";
 
 export interface PiSlicerOptions {
-  repo: string;
   workdir: string;
   model: ModelId;
   credentials: CredentialStore;
@@ -31,21 +28,19 @@ export interface PiSlicerOptions {
 }
 
 export class PiSlicer {
-  private readonly repo: string;
   private readonly workdir: string;
   private readonly model: ModelId;
   private readonly credentials: CredentialStore;
   private readonly sessionFactory: CodingSessionFactory;
 
   constructor(opts: PiSlicerOptions) {
-    this.repo = opts.repo;
     this.workdir = opts.workdir;
     this.model = opts.model;
     this.credentials = opts.credentials;
     this.sessionFactory = opts.sessionFactory ?? realSessionFactory;
   }
 
-  async slice(parentId: number, prd: string): Promise<SlicePlan> {
+  async slice(prdBody: string): Promise<SlicePlan> {
     const apiKey = await this.credentials.get(this.model.provider);
     if (apiKey === null) {
       throw new Error(`no API key for provider "${this.model.provider}" (slicer)`);
@@ -57,33 +52,43 @@ export class PiSlicer {
       name: SLICE_PLAN_TOOL,
       label: "Submit slice plan",
       description:
-        "Record your final slice plan. Call this exactly once when done. " +
-        "Break the parent PRD into slices — each slice must be a self-contained, " +
-        "independently-deliverable unit of work that a coding agent can implement.",
+        "Submit the slice decomposition plan. Call this exactly once when done. " +
+        "The plan must contain a title and a non-empty list of vertical slices, each " +
+        "with title, brief, effort, category, review policy, and optional dependsOn indices.",
       parameters: Type.Object({
-        title: Type.String({ description: "A short title for the overall track." }),
+        title: Type.String({ description: "Descriptive title for the overall track/plan" }),
         slices: Type.Array(
           Type.Object({
-            title: Type.String({ description: "Short title for this slice." }),
+            title: Type.String({ description: "Short, descriptive slice title" }),
             brief: Type.String({
               description:
-                "Self-contained implementation brief. Must include: what to change, " +
-                "which files, the verification method, and the done condition.",
+                "What to build and why — the agent's implementation brief. " +
+                "Must name files/regions when known and include a verification method.",
             }),
-            effort: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")]),
-            category: Type.Union([Type.Literal("bug"), Type.Literal("enhancement")]),
+            effort: Type.Union(
+              [Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")],
+              {
+                description:
+                  "Reasoning effort: low (mechanical), medium (needs care), high (heavy)",
+              },
+            ),
+            category: Type.Union([Type.Literal("bug"), Type.Literal("enhancement")], {
+              description: "Issue category",
+            }),
             review: Type.Union([Type.Literal("agent"), Type.Literal("human")], {
-              description: "agent (default) or human when the slice needs human judgment.",
+              description:
+                "review:agent by default. Use review:human only for slices needing judgment calls, " +
+                "external access, or manual/native work that an agent cannot self-verify.",
             }),
             dependsOn: Type.Optional(
-              Type.Array(Type.Integer(), {
+              Type.Array(Type.Number(), {
                 description:
-                  "Indices into the slices array (0-based) that this slice depends on. " +
-                  "Omit for the first slice with no dependencies.",
+                  "Zero-based indices into the slices array for dependencies. " +
+                  "Omit or leave empty if this slice has no dependencies.",
               }),
             ),
           }),
-          { description: "Ordered list of slices. First slice must have no dependsOn." },
+          { description: "The list of vertical slices, dependency-ordered", minItems: 1 },
         ),
       }),
       execute: async (_toolCallId, params) => {
@@ -95,7 +100,7 @@ export class PiSlicer {
             effort: s.effort,
             category: s.category,
             review: s.review,
-            dependsOn: s.dependsOn,
+            ...(s.dependsOn !== undefined ? { dependsOn: s.dependsOn } : {}),
           })),
         };
         return { content: [{ type: "text", text: "slice plan recorded" }], details: {} };
@@ -106,56 +111,96 @@ export class PiSlicer {
       model: this.model,
       apiKey,
       cwd: this.workdir,
+      // The allowlist gates custom tools too — submit_slice_plan MUST be listed
+      // or the slicer can't report a plan (and the fail-safe would reject).
       tools: [...SLICER_TOOLS, SLICE_PLAN_TOOL],
       customTools: [submitSlicePlan],
     });
-    await session.prompt(buildSlicePrompt(parentId, prd));
+    await session.prompt(buildSlicePrompt(prdBody));
 
-    // Prose-only nudge: the plan only counts via the tool.
+    // Some models state the plan in prose instead of calling the tool. Nudge
+    // once: the plan only counts if it comes through submit_slice_plan.
     if (captured === null) {
-      await session.prompt(SLICE_PLAN_NUDGE);
+      await session.prompt(SLICE_NUDGE);
     }
 
+    // Fail safe: a slicer that never submitted a plan fails loudly — never a
+    // silent empty plan (the orchestrator cannot proceed without a valid plan).
     if (captured === null) {
-      throw new Error("Slice agent did not submit a slice plan");
+      throw new Error("slicer did not submit a slice plan — no plan to decompose");
     }
 
     return captured;
   }
 }
 
-/** Sent if the model answered without calling the verdict tool. */
-export const SLICE_PLAN_NUDGE =
+/** Sent if the model answered without calling the plan tool. */
+export const SLICE_NUDGE =
   "You have not submitted a slice plan. Do NOT answer in prose. The ONLY way to finish " +
-  "this slicing session is to call the `submit_slice_plan` tool now with `title` and `slices`.";
+  "this task is to call the `submit_slice_plan` tool now, with `title` and `slices` " +
+  "(each with `title`, `brief`, `effort`, `category`, `review`, and optional `dependsOn`).";
 
-export function buildSlicePrompt(parentId: number, prd: string): string {
+export function buildSlicePrompt(prdBody: string): string {
   return [
-    "You are a decomposition agent. Your job is to read a parent PRD and break it into",
-    "self-contained, independently-deliverable slices that coding agents can implement.",
+    "You are a planning agent. Your job is to read a PRD and decompose it into",
+    "vertical, dependency-ordered slices — the units an autonomous coding agent",
+    "will implement one at a time.",
     "",
-    "## Rules for slicing",
+    "You have read-only tools (read/grep/find/ls). Use them to investigate the",
+    "repository for context: the CONTEXT.md, ADR files in docs/adr/, the agent-ready",
+    "bar in docs/agents/agent-ready-issues.md, and any relevant source code. The",
+    "more you understand the existing codebase, the more accurate your slices will be.",
     "",
-    "1. **Tracer-bullet vertical slices** — each slice delivers a user-visible or testable",
-    '   increment. No horizontal layers ("the database layer", "the UI layer").',
-    "2. **Self-contained brief** — every slice's brief must include: what to change,",
-    "   which files are involved, the verification method, and the done condition.",
-    "3. **effort:high is an escalation trigger** — only use `high` when the slice genuinely",
-    "   needs a stronger model. Prefer `medium` for most work; `low` for trivial changes.",
-    "4. **review:agent by default** — use `human` only when the slice touches auth, secrets,",
-    "   irreversible data migrations, or needs human judgment.",
-    "5. **Dependencies are indices** — `dependsOn` carries zero-based indices into the",
-    "   `slices` array, NOT issue numbers. The first slice must have no `dependsOn`.",
-    "6. **No cycles** — the dependency graph must be a DAG.",
+    "## The agent-ready bar (your output must meet this contract)",
     "",
-    "Read the PRD below. Use your tools to explore the repository for context (ADR files,",
-    "existing code structure, package layout) so your slices reference real file paths.",
-    "Then call `submit_slice_plan` exactly once.",
+    "Every slice you produce is a contract an agent must fulfill. Each slice's `brief`",
+    "must meet these criteria (from docs/agents/agent-ready-issues.md):",
     "",
-    "CRITICAL: your plan is ONLY complete when you call the `submit_slice_plan` tool.",
-    "Do NOT write your plan as prose or a summary — it will be ignored.",
+    "1. **No open design calls** — decisions are already made, in the brief.",
+    "2. **Names a verification method** — `test-verifiable` (preferred) or",
+    "   `verify-gate-only` (for pure refactors). Never 'looks right'.",
+    "3. **Small blast radius** — one concern, few files, reviews at a glance.",
+    "4. **Names files/regions when known** — exact paths keep the blast radius small",
+    "   and let the plan-reviewer validate scope.",
     "",
-    `## Parent PRD (#${parentId})`,
-    prd,
+    "## How to decompose",
+    "",
+    "- **Vertical slices by default** — each slice is independently valuable and",
+    "  produces a working increment of the feature.",
+    "- **Dependency-ordered** — slices earlier in the list must not depend on later",
+    "  ones. Use `dependsOn` (zero-based indices) to express explicit dependencies.",
+    "- **Effort classification**:",
+    "  - `effort:low` — mechanical; rename, add a guard, copy an existing pattern.",
+    "  - `effort:medium` — specified but needs care; new component following existing",
+    "    ones, multi-file wiring.",
+    "  - `effort:high` — reasoning-heavy even when fully specified. Prefer decomposing",
+    "    further rather than leaving a slice with `effort:high`.",
+    "- **`review:human`** — mark a slice `review:human` (instead of the default",
+    "  `review:agent`) ONLY when it genuinely needs a human to implement: judgment",
+    "  calls an agent cannot make, external access only a human has, or manual/native",
+    "  work that cannot be self-verified. For everything else, use `review:agent`.",
+    "- **`ready-for-human` vs `ready-for-agent`** — a `review:human` slice becomes",
+    "  `ready-for-human` in the tracker (a human must implement it). A `review:agent`",
+    "  slice with a complete brief becomes `ready-for-agent`. If a slice is too",
+    "  ambiguous for an agent even with `review:agent`, it belongs in a further",
+    "  decomposition round — do NOT emit it.",
+    "",
+    "## Rules",
+    "",
+    "- The `slices` array must be non-empty.",
+    "- Every `dependsOn` index must reference a valid slice index (0..slices.length-1).",
+    "  No dangling references.",
+    "- No dependency cycles — the graph must be acyclic.",
+    "- Each slice's `brief` is its implementation contract — be concrete, name files",
+    "  and symbols when you can, and always include the verification method.",
+    "- Decompose until leaves are `effort:low` or `effort:medium`. If a leaf genuinely",
+    "  cannot be reduced below `effort:high`, leave it as-is (but prefer splitting it).",
+    "",
+    "CRITICAL: your task is ONLY complete when you call the `submit_slice_plan` tool.",
+    "Do NOT write your plan as prose or a summary — it will be ignored. Call",
+    "`submit_slice_plan` exactly once with `title` and `slices`.",
+    "",
+    "## PRD to slice",
+    prdBody,
   ].join("\n");
 }

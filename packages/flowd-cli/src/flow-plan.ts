@@ -128,14 +128,13 @@ export async function runPlan(input: PlanFlowInput): Promise<PlanFlowOutput> {
 
   // ── T12: Slice ───────────────────────────────────────────────────────────
   const slicer = new PiSlicer({
-    repo: config.repo,
     workdir,
     model: config.models.slice,
     credentials,
   });
 
   console.error(`Slicing issue #${input.issue} from PRD ${prdPath}...`);
-  const plan = await slicer.slice(input.issue, prd);
+  const plan = await slicer.slice(prd);
 
   return runPlanPipeline(ports, config, { issue: input.issue, prd, plan });
 }
