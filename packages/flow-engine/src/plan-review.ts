@@ -50,9 +50,16 @@ export function detectEffortHigh(world: World): number[] {
  * Returns `null` when the gate is clean — only CLEAR, no risks, every
  * child passes agent-ready.
  */
-export function combineVerdict(world: World, verdict: PlanReviewVerdict | null): string[] | null {
+export function combineVerdict(
+  world: World,
+  verdict: PlanReviewVerdict | null,
+  agentError?: Error | null,
+): string[] | null {
   // Absent/empty verdict → escalate (fail-safe — same stance as 0001's reviewer).
   if (!verdict || !verdict.decision) {
+    if (agentError) {
+      return [`plan-review agent failed: ${agentError.message}`];
+    }
     return ["Plan review agent returned no verdict"];
   }
 
@@ -126,13 +133,15 @@ export async function runPlanGate(
 
   // Call the plan-review agent (may throw — caught below as escalate).
   let verdict: PlanReviewVerdict | null = null;
+  let agentError: Error | null = null;
   try {
     verdict = await ports.agent.planReview(trackId);
-  } catch {
-    // Agent call failed — fall through to escalate with a null verdict.
+  } catch (err) {
+    // Agent call failed — capture the error so it surfaces in the escalation.
+    agentError = err instanceof Error ? err : new Error(String(err));
   }
 
-  const escalateRisks = combineVerdict(world, verdict);
+  const escalateRisks = combineVerdict(world, verdict, agentError);
 
   if (escalateRisks !== null) {
     // T14: Escalate — leave the parent in needs-plan-review; post the risks.

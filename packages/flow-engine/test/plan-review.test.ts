@@ -129,6 +129,15 @@ describe("combineVerdict", () => {
     expect(risks).toContain("Plan review agent returned no verdict");
   });
 
+  test("escalates with agent error message when agentError is provided", () => {
+    const risks = assertEscalate(
+      combineVerdict(world("low"), null, new Error("model unavailable")),
+    );
+    expect(risks).toContain("plan-review agent failed: model unavailable");
+    // The generic fallback is NOT used when an error is present.
+    expect(risks).not.toContain("Plan review agent returned no verdict");
+  });
+
   test("escalates when verdict has no childAgentReady entries", () => {
     const v: PlanReviewVerdict = {
       decision: "CLEAR",
@@ -380,8 +389,9 @@ describe("runPlanGate — escalate path (T14)", () => {
 
     const result = await runPlanGate(flow.ports, 1, OPTS);
 
+    // The fake throws when no verdict is configured; the error must be surfaced.
     expect(result.kind).toBe("escalate");
-    expect(result.risks).toContain("Plan review agent returned no verdict");
+    expect(result.risks.some((r) => r.startsWith("plan-review agent failed:"))).toBe(true);
     expect(flow.track.role).toBe("needs-plan-review");
   });
 
@@ -396,7 +406,9 @@ describe("runPlanGate — escalate path (T14)", () => {
     const result = await runPlanGate(flow.ports, 1, OPTS);
 
     expect(result.kind).toBe("escalate");
-    expect(result.risks).toContain("Plan review agent returned no verdict");
+    // Error message must be surfaced — not the generic "no verdict" fallback.
+    expect(result.risks).toContain("plan-review agent failed: model unavailable");
+    expect(result.risks).not.toContain("Plan review agent returned no verdict");
   });
 
   test("posts an escalation marker comment with the named risks", async () => {
