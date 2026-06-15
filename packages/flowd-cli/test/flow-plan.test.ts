@@ -417,7 +417,8 @@ describe("runPlanPipeline — escalate path (T14)", () => {
     });
 
     expect(result.gate).toBe("escalate");
-    expect(result.risks).toContain("Plan review agent returned no verdict");
+    // The agent's error message must appear in risks — not the generic fallback.
+    expect(result.risks).toContain("plan-review agent failed: model unavailable");
   });
 
   test("escalates when a child fails agent-ready", async () => {
