@@ -6,6 +6,8 @@
 import type {
   AgentContext,
   AgentPort,
+  Category,
+  CreateItemParams,
   Effort,
   ForgePort,
   OrchestratorPorts,
@@ -22,6 +24,8 @@ import type {
 
 export interface FakeSliceSpec {
   id: number;
+  /** Item title. Defaults to "slice-<id>" if omitted. */
+  title?: string;
   role?: Role;
   effort?: Effort;
   review?: ReviewPolicy;
@@ -48,6 +52,8 @@ export interface FakeConfig {
 
 interface Rec {
   id: number;
+  title: string;
+  body: string;
   role: Role;
   effort?: Effort;
   review: ReviewPolicy;
@@ -79,6 +85,10 @@ export interface FakeFlow {
     roleChanges: { id: number; role: Role }[];
     /** planReview calls to the agent. */
     planReview: number[];
+    /** Items created via createItem: (parentId, title, newId). */
+    createdItems: { parentId: number; title: string; id: number; role: Role }[];
+    /** Dependency writes via setDependencies: (itemId, dependsOn[]). */
+    dependencyWrites: { id: number; dependsOn: number[] }[];
   };
 }
 
@@ -96,6 +106,8 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       s.id,
       {
         id: s.id,
+        title: s.title ?? `slice-${s.id}`,
+        body: `## Brief\n\nFake body for slice ${s.id}\n\nParent: #${config.trackId ?? 1}`,
         role: s.role ?? "ready-for-agent",
         effort: s.effort,
         review: s.review ?? "agent",
@@ -126,6 +138,8 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     createTrackBranch: [],
     roleChanges: [],
     planReview: [],
+    createdItems: [],
+    dependencyWrites: [],
   };
   let prCounter = 100;
 
@@ -145,6 +159,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     listSlices: async (): Promise<TrackerSlice[]> =>
       [...recs.values()].map((r) => ({
         id: r.id,
+        title: r.title,
         role: r.role,
         effort: r.effort,
         review: r.review,
@@ -163,7 +178,39 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     },
     setRole: async (itemId, role) => {
       counts.roleChanges.push({ id: itemId, role });
-      track.role = role;
+      // Only mutate track.role when the item is the track parent itself.
+      if (itemId === track.id) track.role = role;
+    },
+    createItem: async (params: CreateItemParams): Promise<number> => {
+      const newId = Math.max(100, ...recs.keys()) + 1;
+      recs.set(newId, {
+        id: newId,
+        title: params.title,
+        body: params.body,
+        role: params.role,
+        effort: params.effort,
+        review: params.review,
+        dependsOn: [],
+        assignee: null,
+        closed: false,
+        branch: null,
+        pr: null,
+      });
+      counts.createdItems.push({
+        parentId: params.parentId,
+        title: params.title,
+        id: newId,
+        role: params.role,
+      });
+      return newId;
+    },
+    setDependencies: async (itemId, dependsOn) => {
+      const rec = must(itemId);
+      rec.dependsOn = [...dependsOn];
+      counts.dependencyWrites.push({ id: itemId, dependsOn: [...dependsOn] });
+    },
+    getItemBody: async (itemId) => {
+      return must(itemId).body;
     },
   };
 

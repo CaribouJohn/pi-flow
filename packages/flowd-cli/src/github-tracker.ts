@@ -1,4 +1,5 @@
 import type {
+  CreateItemParams,
   Effort,
   ReviewPolicy,
   Role,
@@ -117,6 +118,29 @@ export class GitHubTrackerAdapter implements TrackerPort {
     await this.run(["issue", "comment", String(itemId), "--repo", this.repo, "--body", body]);
   }
 
+  async createItem(params: CreateItemParams): Promise<number> {
+    // The real implementation will use `gh issue create` — for now, stub.
+    throw new Error("GitHubTrackerAdapter.createItem not yet implemented");
+  }
+
+  async setDependencies(itemId: number, dependsOn: number[]): Promise<void> {
+    // The real implementation will write `## Blocked by` into the issue body.
+    throw new Error("GitHubTrackerAdapter.setDependencies not yet implemented");
+  }
+
+  async getItemBody(itemId: number): Promise<string> {
+    const out = await this.run([
+      "issue",
+      "view",
+      String(itemId),
+      "--repo",
+      this.repo,
+      "--json",
+      "body",
+    ]);
+    return (JSON.parse(out) as { body: string | null }).body ?? "";
+  }
+
   async setRole(itemId: number, role: Role): Promise<void> {
     // Remove all existing role labels, then add the target. A remove can fail
     // simply because the label isn't present (expected) — but it can also fail
@@ -150,6 +174,7 @@ function mapIssueToSlice(issue: GhIssue): TrackerSlice | null {
   if (role === undefined) return null;
   return {
     id: issue.number,
+    title: "", // Title is not in the json output of the list command — filled by the CLI layer.
     role,
     effort: parseEffort(labels),
     review: parseReview(labels),
