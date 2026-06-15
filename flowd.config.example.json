@@ -1,0 +1,15 @@
+{
+  "repo": "CaribouJohn/pi-flow-sandbox",
+  "defaultBranch": "main",
+  "trackBranch": "track/sandbox-demo",
+  "workdir": ".flowd-workdir",
+  "actor": "CaribouJohn",
+  "aiDisclaimer": "🤖 Posted by pi-flow on behalf of @CaribouJohn",
+  "reviewerIterationCap": 2,
+  "verifyCommand": "bun run verify",
+  "credentialsPath": ".flowd/credentials.json",
+  "models": {
+    "implement": { "provider": "anthropic", "id": "claude-opus-4-8" },
+    "review": { "provider": "openai", "id": "gpt-5" }
+  }
+}

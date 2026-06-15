@@ -22,3 +22,8 @@ Thumbs.db
 # Env
 .env
 .env.local
+
+# flowd runtime (never commit keys, the local config, or the working clone)
+.flowd/
+.flowd-workdir/
+flowd.config.json
