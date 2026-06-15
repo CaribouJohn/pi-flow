@@ -120,13 +120,33 @@ export class GitHubTrackerAdapter implements TrackerPort {
   }
 
   async createItem(params: CreateItemParams): Promise<number> {
-    // The real implementation will use `gh issue create` — for now, stub.
-    throw new Error("GitHubTrackerAdapter.createItem not yet implemented");
+    // Labels: role + category + (effort) + review — the profile's 1:1 strings.
+    const labels: string[] = [params.role, params.category];
+    if (params.effort) labels.push(`effort:${params.effort}`);
+    labels.push(`review:${params.review}`);
+    const args = [
+      "issue",
+      "create",
+      "--repo",
+      this.repo,
+      "--title",
+      params.title,
+      "--body",
+      params.body,
+    ];
+    for (const label of labels) {
+      args.push("--label", label);
+    }
+    return parseIssueNumber(await this.run(args));
   }
 
   async setDependencies(itemId: number, dependsOn: number[]): Promise<void> {
-    // The real implementation will write `## Blocked by` into the issue body.
-    throw new Error("GitHubTrackerAdapter.setDependencies not yet implemented");
+    if (dependsOn.length === 0) return; // nothing to write
+    // Append a `## Blocked by` section to the body (the form parseDependsOn reads).
+    const body = (await this.getItemBody(itemId)).trim();
+    const section = ["## Blocked by", ...dependsOn.map((n) => `- #${n}`)].join("\n");
+    const newBody = body.length > 0 ? `${body}\n\n${section}\n` : `${section}\n`;
+    await this.run(["issue", "edit", String(itemId), "--repo", this.repo, "--body", newBody]);
   }
 
   async getItemBody(itemId: number): Promise<string> {
@@ -168,6 +188,15 @@ export class GitHubTrackerAdapter implements TrackerPort {
 }
 
 // --- pure parsers (unit-tested directly) ---
+
+/** Parse the issue number from `gh issue create` output (the trailing issue URL). */
+export function parseIssueNumber(ghCreateOutput: string): number {
+  const n = Number(ghCreateOutput.trim().split("/").pop());
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`could not parse issue number from: ${ghCreateOutput.trim()}`);
+  }
+  return n;
+}
 
 function mapIssueToSlice(issue: GhIssue): TrackerSlice | null {
   const labels = issue.labels.map((l) => l.name);

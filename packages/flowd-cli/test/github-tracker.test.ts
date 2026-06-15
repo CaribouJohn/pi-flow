@@ -4,10 +4,73 @@ import {
   GitHubTrackerAdapter,
   parseDependsOn,
   parseEffort,
+  parseIssueNumber,
   parseParent,
   parseReview,
   parseRole,
 } from "../src/github-tracker.ts";
+
+describe("parseIssueNumber", () => {
+  test("parses the issue number from the create URL", () => {
+    expect(parseIssueNumber("https://github.com/o/r/issues/42\n")).toBe(42);
+  });
+  test("throws on unparseable output", () => {
+    expect(() => parseIssueNumber("https://github.com/o/r/issues/\n")).toThrow(/could not parse/);
+  });
+});
+
+describe("GitHubTrackerAdapter — createItem / setDependencies", () => {
+  function runnerWith(createUrl: string, body = "") {
+    const calls: string[][] = [];
+    const run: GhRunner = async (args) => {
+      calls.push(args);
+      if (args[0] === "issue" && args[1] === "create") return createUrl;
+      if (args[0] === "issue" && args[1] === "view") return JSON.stringify({ body });
+      return "";
+    };
+    return { run, calls };
+  }
+
+  test("createItem creates an issue with role/category/effort/review labels and returns its number", async () => {
+    const { run, calls } = runnerWith("https://github.com/o/r/issues/55\n");
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
+    const id = await tracker.createItem({
+      parentId: 1,
+      role: "ready-for-agent",
+      title: "do a thing",
+      body: "the brief",
+      effort: "low",
+      review: "agent",
+      category: "enhancement",
+    });
+    expect(id).toBe(55);
+    const create = calls.find((c) => c[1] === "create");
+    expect(create).toContain("do a thing");
+    expect(create).toContain("ready-for-agent");
+    expect(create).toContain("enhancement");
+    expect(create).toContain("effort:low");
+    expect(create).toContain("review:agent");
+  });
+
+  test("setDependencies appends a ## Blocked by section, preserving the body", async () => {
+    const { run, calls } = runnerWith("", "## What\nexisting body");
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
+    await tracker.setDependencies(7, [3, 5]);
+    const edit = calls.find((c) => c[1] === "edit");
+    const body = edit?.[edit.indexOf("--body") + 1] ?? "";
+    expect(body).toContain("## Blocked by");
+    expect(body).toContain("- #3");
+    expect(body).toContain("- #5");
+    expect(body).toContain("existing body");
+  });
+
+  test("setDependencies is a no-op when there are no dependencies", async () => {
+    const { run, calls } = runnerWith("");
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
+    await tracker.setDependencies(7, []);
+    expect(calls.some((c) => c[1] === "edit")).toBe(false);
+  });
+});
 
 describe("parseRole", () => {
   test("finds the canonical role label", () => {
