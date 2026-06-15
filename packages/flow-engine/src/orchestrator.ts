@@ -17,6 +17,11 @@ export type Action =
   | { kind: "reimplement"; sliceId: number }
   | { kind: "review"; sliceId: number }
   | { kind: "merge"; sliceId: number }
+  /**
+   * §8.8 — a slice whose PR was merged outside the loop (by a maintainer or bot).
+   * The orchestrator closes the tracker item instead of re-implementing.
+   */
+  | { kind: "close"; sliceId: number }
   | { kind: "park"; sliceId: number; reason: string }
   | { kind: "done" };
 
@@ -94,6 +99,9 @@ export function decide(world: World, reviewerIterationCap: number): Action {
           sliceId: inFlight.id,
           reason: `reviewer still requesting changes after ${reviewerIterationCap} review(s)`,
         };
+      case "merged":
+        // §8.8 — PR was merged outside the loop; treat the slice as done.
+        return { kind: "close", sliceId: inFlight.id };
     }
   }
 
@@ -178,6 +186,16 @@ async function apply(
       await ports.forge.recordReviewVerdict(pr.number, verdict);
       await ports.tracker.comment(slice.id, disclaim(opts, reviewComment(verdict)));
       return { detail: `review: ${verdict.decision}` };
+    }
+
+    case "close": {
+      if (slice.branch !== null) await ports.forge.deleteBranch(slice.branch);
+      await ports.tracker.closeSlice(slice.id);
+      await ports.tracker.comment(
+        slice.id,
+        disclaim(opts, "PR was merged outside the loop — slice closed (§8.8)."),
+      );
+      return { detail: `closed slice (PR #${slice.pr?.number ?? "?"} merged out-of-band)` };
     }
 
     case "merge": {

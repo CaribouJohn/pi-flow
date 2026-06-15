@@ -31,7 +31,7 @@ export interface Verdict {
 }
 
 /** Forge state of a slice's pull request into the track branch. */
-export type PrStatus = "open" | "approved" | "changes-requested";
+export type PrStatus = "open" | "approved" | "changes-requested" | "merged";
 
 export interface PullRequest {
   number: number;

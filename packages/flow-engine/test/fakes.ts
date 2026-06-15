@@ -32,6 +32,10 @@ export interface FakeSliceSpec {
   dependsOn?: number[];
   assignee?: string | null;
   closed?: boolean;
+  /** Pre-set the slice branch (e.g. when testing a slice already in progress). */
+  branch?: string | null;
+  /** Pre-set the slice PR (e.g. a merged-out-of-band PR for §8.8 tests). */
+  pr?: PullRequest | null;
 }
 
 export interface FakeConfig {
@@ -118,8 +122,8 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
         dependsOn: s.dependsOn ?? [],
         assignee: s.assignee ?? null,
         closed: s.closed ?? false,
-        branch: null,
-        pr: null,
+        branch: s.branch ?? null,
+        pr: s.pr ?? null,
       },
     ]),
   );
