@@ -130,6 +130,29 @@ export class GitForgeAdapter implements ForgePort {
     await this.git(["push", "origin", sliceBranch(sliceId)]);
   }
 
+  /**
+   * Merge the track branch into the slice branch and push (S7 pre-merge), so a
+   * slice that went stale while siblings merged this run can still merge. On
+   * conflict, abort (leaving the workdir clean) and return false → the slice
+   * parks for manual resolution rather than crashing the run.
+   */
+  async refreshSliceFromTrack(sliceId: number, trackBranch: string): Promise<boolean> {
+    const branch = sliceBranch(sliceId);
+    await this.git(["fetch", "origin"]);
+    // Sync local to the PR head on origin first — this picks up any *external*
+    // conflict resolution (e.g. a maintainer or bot fixing the PR remotely). By
+    // S7 all slice work is pushed, so resetting local to origin loses nothing.
+    await this.git(["checkout", "-B", branch, `origin/${branch}`]);
+    try {
+      await this.git(["merge", `origin/${trackBranch}`, "--no-edit"]);
+    } catch {
+      await this.git(["merge", "--abort"]).catch(() => {});
+      return false;
+    }
+    await this.git(["push", "origin", branch]);
+    return true;
+  }
+
   /** Open the slice PR with base = the track branch (S5). Idempotent (§8.8). */
   async openPr(sliceId: number, base: string): Promise<PullRequest> {
     // Don't open a PR that already exists (e.g. a crash/replay between push and

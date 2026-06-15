@@ -182,7 +182,15 @@ async function apply(
 
     case "merge": {
       const pr = requirePr(slice, "merge");
-      // Invariant #3 — never merge past a red gate. Re-check at merge time.
+      // Bring the slice up to date with the track first: siblings may have
+      // merged during this run, leaving it stale (its merge commit can't be
+      // created). A conflict can't be auto-resolved — park for a human.
+      const fresh = await ports.forge.refreshSliceFromTrack(slice.id, world.track.branch);
+      if (!fresh) {
+        return { park: "merge conflict with the track branch — needs manual resolution" };
+      }
+      // Invariant #3 — never merge past a red gate. Re-check after the refresh
+      // (the track-merge may have broken the build).
       const gate = await ports.verify.run(slice.id);
       if (!gate.green) return { park: redGate("verify gate red at merge", gate.output) };
       await ports.forge.mergePr(pr.number);

@@ -48,6 +48,8 @@ export interface FakeConfig {
   planReviewVerdict?: PlanReviewVerdict;
   /** If set, planReview throws instead of returning a verdict (simulate agent failure). */
   planReviewError?: Error;
+  /** Slice ids whose refreshSliceFromTrack returns false (simulate a merge conflict). */
+  refreshConflictSlices?: number[];
 }
 
 interface Rec {
@@ -79,6 +81,8 @@ export interface FakeFlow {
     deletedBranches: string[];
     /** Slice ids whose branch was pushed to origin (S6a re-implement). */
     pushed: number[];
+    /** Slice ids refreshed against the track before merge (S7). */
+    refreshed: number[];
     /** Track branches created by createTrackBranch (idempotent). */
     createTrackBranch: string[];
     /** Role changes made via setRole: (itemId, newRole). */
@@ -135,6 +139,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     merged: [],
     deletedBranches: [],
     pushed: [],
+    refreshed: [],
     createTrackBranch: [],
     roleChanges: [],
     planReview: [],
@@ -243,6 +248,10 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     reopenForReview: async (prNumber) => {
       const rec = byPr(prNumber);
       if (rec.pr !== null) rec.pr.status = "open";
+    },
+    refreshSliceFromTrack: async (sliceId) => {
+      counts.refreshed.push(sliceId);
+      return !(config.refreshConflictSlices ?? []).includes(sliceId);
     },
     mergePr: async (prNumber) => {
       const rec = byPr(prNumber);

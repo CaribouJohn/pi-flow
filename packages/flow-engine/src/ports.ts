@@ -67,6 +67,14 @@ export interface ForgePort {
   recordReviewVerdict(prNumber: number, verdict: Verdict): Promise<void>;
   /** Re-open a changes-requested PR for re-review after a fix (S6a). */
   reopenForReview(prNumber: number): Promise<void>;
+  /**
+   * Bring the slice branch up to date with the track branch before merging (S7).
+   * Sibling slices may have merged into the track during this same run, leaving
+   * this slice stale → an un-creatable merge commit. Merges the track into the
+   * slice and pushes. Returns `false` if the merge conflicts (left clean via
+   * abort) — the slice then parks for manual resolution rather than crashing.
+   */
+  refreshSliceFromTrack(sliceId: number, trackBranch: string): Promise<boolean>;
   /** Merge the slice PR into its base (the track branch only) (S7). */
   mergePr(prNumber: number): Promise<void>;
   deleteBranch(branch: string): Promise<void>;

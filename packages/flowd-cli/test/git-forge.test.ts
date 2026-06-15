@@ -164,6 +164,31 @@ describe("GitForgeAdapter — PRs", () => {
     expect(calls.map((c) => c.args.join(" "))).toContain("push origin slice/2");
   });
 
+  test("refreshSliceFromTrack merges the track into the slice and pushes (S7)", async () => {
+    const { run, calls } = makeFake();
+    const ok = await new GitForgeAdapter(OPTS(run)).refreshSliceFromTrack(2, "track/x");
+    expect(ok).toBe(true);
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout -B slice/2 origin/slice/2"); // sync to PR head (picks up remote fixes)
+    expect(git).toContain("merge origin/track/x --no-edit");
+    expect(git).toContain("push origin slice/2");
+  });
+
+  test("refreshSliceFromTrack aborts + returns false on conflict (parks, never pushes)", async () => {
+    const calls: string[][] = [];
+    const run: CmdRunner = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "git" && args[0] === "merge" && args[1] !== "--abort") {
+        throw new Error("CONFLICT (content): merge conflict");
+      }
+      return "";
+    };
+    const ok = await new GitForgeAdapter(OPTS(run)).refreshSliceFromTrack(2, "track/x");
+    expect(ok).toBe(false);
+    expect(calls).toContainEqual(["git", "merge", "--abort"]); // workdir recovered
+    expect(calls.some((c) => c[0] === "git" && c[1] === "push")).toBe(false); // never pushed
+  });
+
   test("mergePr merges a track-based PR with --squash", async () => {
     const { run, calls } = makeFake({ prBase: "track/x" });
     await new GitForgeAdapter(OPTS(run)).mergePr(200);
