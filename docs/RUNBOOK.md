@@ -10,7 +10,9 @@ that verifies the deferred acceptance criteria of #86/#87/#88.
 
 ## 1. Prerequisites
 
-- **Bun** ≥ 1.3, **`gh`** authenticated (`gh auth status`).
+- **Bun** ≥ 1.3, **`gh`** authenticated (`gh auth status`), and **`sh`** on PATH
+  (ships with Git for Windows, which `gh` already implies) — the verify gate runs
+  via `sh -c`.
 - **Two provider API keys** — one for the implementer model, one for a
   *different* reviewer model (invariant #2). The example config uses
   `anthropic/claude-opus-4-8` (implement) + `openai/gpt-5` (review) — change the
@@ -60,6 +62,9 @@ confirm `repo`/`trackBranch`, and `actor` (the assignee/attribution identity).
 ```sh
 bun packages/flowd-cli/src/index.ts run --track 1 --config flowd.config.json
 ```
+
+(The config path resolves as `--config` flag → `FLOWD_CONFIG` env var →
+`flowd.config.json` default.)
 
 `--track 1` is the **tracking parent** id (its `ready-for-agent` children are the
 slices). flowd will: clone the repo into `.flowd-workdir`, **S0** drift-refresh,
