@@ -114,6 +114,31 @@ describe("GitForgeAdapter — git ops run in the workdir", () => {
     expect(git.some((g) => g.includes("-b slice/2"))).toBe(false); // never recreate
   });
 
+  test("createTrackBranch creates the branch off the default branch when absent", async () => {
+    const { run, calls } = makeFake(); // not on remote, not local
+    await new GitForgeAdapter(OPTS(run)).createTrackBranch("track/x");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout -b track/x origin/main");
+    expect(git).toContain("push -u origin track/x");
+  });
+
+  test("createTrackBranch is a no-op when the branch already exists on origin (§8.8)", async () => {
+    const { run, calls } = makeFake({ lsRemote: "abc\trefs/heads/track/x" });
+    await new GitForgeAdapter(OPTS(run)).createTrackBranch("track/x");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git.some((g) => g.startsWith("checkout"))).toBe(false); // never created
+    expect(git.some((g) => g.startsWith("push"))).toBe(false); // never pushed
+  });
+
+  test("createTrackBranch REUSES a local branch from a prior failed push (no -b crash)", async () => {
+    const { run, calls } = makeFake({ localBranch: "  track/x\n" }); // local exists, not on remote
+    await new GitForgeAdapter(OPTS(run)).createTrackBranch("track/x");
+    const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
+    expect(git).toContain("checkout track/x"); // plain checkout, not -b
+    expect(git.some((g) => g.includes("-b track/x"))).toBe(false);
+    expect(git).toContain("push -u origin track/x");
+  });
+
   test("getSliceBranch reflects ls-remote", async () => {
     const present = makeFake({ lsRemote: "abc123\trefs/heads/slice/2" });
     expect(await new GitForgeAdapter(OPTS(present.run)).getSliceBranch(2)).toBe("slice/2");

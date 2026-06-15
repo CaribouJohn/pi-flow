@@ -152,4 +152,30 @@ describe("GitHubTrackerAdapter", () => {
     expect(calls).toContainEqual(["issue", "close", "2", "--repo", "o/r"]);
     expect(calls).toContainEqual(["issue", "comment", "2", "--repo", "o/r", "--body", "hello"]);
   });
+
+  test("setRole removes existing role labels then adds the target", async () => {
+    const { run, calls } = fakeRunner();
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
+    await tracker.setRole(2, "tracking");
+    // adds the target role label
+    expect(calls).toContainEqual([
+      "issue",
+      "edit",
+      "2",
+      "--repo",
+      "o/r",
+      "--add-label",
+      "tracking",
+    ]);
+    // clears a pre-existing role label first (single-role invariant)
+    expect(calls).toContainEqual([
+      "issue",
+      "edit",
+      "2",
+      "--repo",
+      "o/r",
+      "--remove-label",
+      "ready-for-agent",
+    ]);
+  });
 });

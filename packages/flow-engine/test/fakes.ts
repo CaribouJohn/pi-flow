@@ -41,7 +41,7 @@ export interface FakeConfig {
   /** Per-slice verify result queue; defaults to green when exhausted. */
   verifyResults?: Record<number, boolean[]>;
   /** Plan-review agent verdict to return. Omit to simulate a missing verdict (escalate). */
-  planReviewVerdict?: PlanReviewVerdict | null;
+  planReviewVerdict?: PlanReviewVerdict;
   /** If set, planReview throws instead of returning a verdict (simulate agent failure). */
   planReviewError?: Error;
 }
@@ -217,9 +217,9 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       if (config.planReviewVerdict === undefined) {
         throw new Error("fake: no plan-review verdict configured");
       }
-      if (config.planReviewVerdict === null) {
-        throw new Error("fake: plan-review verdict is null (simulates missing agent)");
-      }
+      // The "agent returned null / missing verdict" path is exercised via
+      // `planReviewError` (throw → caught by runPlanGate → combineVerdict(null))
+      // and directly in plan-review.test.ts; no separate null branch needed.
       return config.planReviewVerdict;
     },
   };
