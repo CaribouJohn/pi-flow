@@ -4,7 +4,14 @@
  * in-memory test fakes implement them. Keeping the engine behind ports is what
  * lets it stay framework-free (ADR-0016) and unit-testable (SPEC §8.9).
  */
-import type { PullRequest, Track, TrackerSlice, Verdict } from "./domain.ts";
+import type {
+  PlanReviewVerdict,
+  PullRequest,
+  Role,
+  Track,
+  TrackerSlice,
+  Verdict,
+} from "./domain.ts";
 
 /** Tracker CRUD + dependency parsing (SPEC §6.1). Returns tracker-owned fields. */
 export interface TrackerPort {
@@ -15,6 +22,8 @@ export interface TrackerPort {
   closeSlice(sliceId: number): Promise<void>;
   /** Post a comment (carrying the profile's AI disclaimer). */
   comment(itemId: number, body: string): Promise<void>;
+  /** Set the role/label on an item (for plan-gate advance, T13). */
+  setRole(itemId: number, role: Role): Promise<void>;
 }
 
 /** Git/forge ops, scoped so the engine can never merge `main` (invariant #1, #6). */
@@ -34,6 +43,11 @@ export interface ForgePort {
   /** Merge the slice PR into its base (the track branch only) (S7). */
   mergePr(prNumber: number): Promise<void>;
   deleteBranch(branch: string): Promise<void>;
+  /**
+   * Create the track branch off `main` (T13). Idempotent: skip if the
+   * branch already exists so a re-run is a no-op (SPEC §8.8).
+   */
+  createTrackBranch(branch: string): Promise<void>;
 }
 
 /** Context handed to an agent role for one slice. */
@@ -50,6 +64,12 @@ export interface AgentPort {
   implement(ctx: AgentContext): Promise<void>;
   /** Adversarially review the slice; return a structured verdict (S6). */
   review(ctx: AgentContext): Promise<Verdict>;
+  /**
+   * Plan-review agent (T13/T14) — a separate Pi session on a *different
+   * model* than the slicer (SPEC §9 invariant #2). Returns a structured
+   * verdict the orchestrator combines with deterministic checks.
+   */
+  planReview(trackId: number): Promise<PlanReviewVerdict>;
 }
 
 /** The deterministic verify gate (S3) — the profile's must-pass command. */

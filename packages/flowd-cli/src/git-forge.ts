@@ -204,6 +204,25 @@ export class GitForgeAdapter implements ForgePort {
       (err) => console.warn(`[git-forge] deleteBranch(${branch}) failed (ignored):`, err),
     );
   }
+
+  /**
+   * Create the track branch off the default branch (T13). Idempotent: if the
+   * branch already exists on origin this is a no-op (SPEC §8.8). If a prior run
+   * created it locally but failed to push, reuse the local branch rather than
+   * crashing on `checkout -b` (same lesson as createSliceBranch).
+   */
+  async createTrackBranch(branch: string): Promise<void> {
+    await this.git(["fetch", "origin"]);
+    const onRemote = (await this.git(["ls-remote", "--heads", "origin", branch])).trim().length > 0;
+    if (onRemote) return;
+    const onLocal = (await this.git(["branch", "--list", branch])).trim().length > 0;
+    if (onLocal) {
+      await this.git(["checkout", branch]);
+    } else {
+      await this.git(["checkout", "-b", branch, `origin/${this.defaultBranch}`]);
+    }
+    await this.git(["push", "-u", "origin", branch]);
+  }
 }
 
 // --- pure helpers (unit-tested directly) ---

@@ -71,6 +71,28 @@ export interface Track {
   id: number;
   /** The track branch (`track/<slug>`), off which slices branch (SPEC §1). */
   branch: string;
+  /** The parent item's role (SPEC §2). Defaults to `tracking` for legacy tracks. */
+  role: Role;
+}
+
+/** Plan-review gate types (SPEC §5.3 T13/T14). */
+export type PlanReviewDecision = "CLEAR" | "ESCALATE";
+
+/** Per-child agent-ready check emitted by the plan-review agent. */
+export interface AgentReadyCheck {
+  pass: boolean;
+  reason?: string;
+}
+
+/**
+ * The structured verdict the plan-review agent returns via `submit_plan_review`.
+ * The orchestrator combines it with deterministic escalation smells (§4.4).
+ */
+export interface PlanReviewVerdict {
+  decision: PlanReviewDecision;
+  risks: string[];
+  /** Per-child agent-ready results, keyed by child issue number. */
+  childAgentReady: Record<number, AgentReadyCheck>;
 }
 
 /** A snapshot of the world the reducer decides over, read fresh each tick. */

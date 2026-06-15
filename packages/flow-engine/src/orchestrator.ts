@@ -137,7 +137,7 @@ export async function runTrack(
   }
 }
 
-async function readWorld(ports: OrchestratorPorts, track: Track): Promise<World> {
+export async function readWorld(ports: OrchestratorPorts, track: Track): Promise<World> {
   const trackerSlices = await ports.tracker.listSlices(track.id);
   const slices: Slice[] = await Promise.all(
     trackerSlices.map(async (ts) => ({
@@ -246,6 +246,6 @@ function redGate(reason: string, output?: string): string {
   return output ? `${reason}: ${output}` : reason;
 }
 
-function disclaim(opts: RunOptions, body: string): string {
+export function disclaim(opts: RunOptions, body: string): string {
   return opts.aiDisclaimer ? `${opts.aiDisclaimer}\n\n${body}` : body;
 }

@@ -59,6 +59,10 @@ export function buildPorts(config: FlowdConfig, credentials: CredentialStore): O
   const agent: AgentPort = {
     implement: (ctx) => implementer.implement(ctx),
     review: (ctx) => reviewer.review(ctx),
+    // Plan-review agent — not yet wired (PRD-0003 slice 5).
+    planReview: async () => {
+      throw new Error("planReview agent not yet implemented (PRD-0003 slice 5)");
+    },
   };
   const verify = makeVerifyGate(config.workdir, config.verifyCommand);
   return { tracker, forge, agent, verify };
