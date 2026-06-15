@@ -5,6 +5,7 @@ default_branch: main
 track_branch_prefix: track/
 verify_gate: 'bun run verify'
 in_situ_harness: ""
+agent_ready_bar: docs/agents/agent-ready-issues.md
 reviewer_command: /code-review
 reviewer_iteration_cap: 2
 poll_cadence_seconds: 30
@@ -139,6 +140,7 @@ Fill these for your repo:
 
 - **Verify gate** (run before review): `<your lint + typecheck + test + build command>`
 - **In-situ verification harness** (UI-bearing slices, if any): `<e.g. a CDP/dev harness>`
+- **Agent-ready bar** (the contract a slice must meet to be `ready-for-agent`): `docs/agents/agent-ready-issues.md`
 - **Reviewer-agent command**: `<e.g. /code-review>`
 
 ## Derived states — never hand-labelled
