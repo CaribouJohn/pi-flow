@@ -5,8 +5,11 @@
  * lets it stay framework-free (ADR-0016) and unit-testable (SPEC §8.9).
  */
 import type {
+  Category,
+  Effort,
   PlanReviewVerdict,
   PullRequest,
+  ReviewPolicy,
   Role,
   Track,
   TrackerSlice,
@@ -24,6 +27,23 @@ export interface TrackerPort {
   comment(itemId: number, body: string): Promise<void>;
   /** Set the role/label on an item (for plan-gate advance, T13). */
   setRole(itemId: number, role: Role): Promise<void>;
+  /** Create a child item under a parent. Returns the new item's id. */
+  createItem(params: CreateItemParams): Promise<number>;
+  /** Write the `## Blocked by` dependency section into an item's body. */
+  setDependencies(itemId: number, dependsOn: number[]): Promise<void>;
+  /** Read an item's body text (for stable-identity dedup). */
+  getItemBody(itemId: number): Promise<string>;
+}
+
+/** Parameters for `createItem` — the fields the writer sets on a new child. */
+export interface CreateItemParams {
+  parentId: number;
+  role: Role;
+  title: string;
+  body: string;
+  effort?: Effort;
+  review: ReviewPolicy;
+  category: Category;
 }
 
 /** Git/forge ops, scoped so the engine can never merge `main` (invariant #1, #6). */

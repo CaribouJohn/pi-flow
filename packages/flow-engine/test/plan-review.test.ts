@@ -39,6 +39,7 @@ describe("detectEffortHigh", () => {
       track: { id: 1, branch: "track/test", role: "needs-plan-review" },
       slices: efforts.map((e, i) => ({
         id: 10 + i,
+        title: `slice-${10 + i}`,
         role: "ready-for-agent" as const,
         review: "agent" as const,
         dependsOn: [] as number[],
@@ -80,6 +81,7 @@ describe("combineVerdict", () => {
       track: { id: 1, branch: "track/test", role: "needs-plan-review" },
       slices: efforts.map((e, i) => ({
         id: 10 + i,
+        title: `slice-${10 + i}`,
         role: "ready-for-agent" as const,
         review: "agent" as const,
         dependsOn: [] as number[],

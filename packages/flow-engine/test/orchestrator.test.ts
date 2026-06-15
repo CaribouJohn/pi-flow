@@ -151,6 +151,7 @@ describe("decide — pure scheduler", () => {
     slices: [
       {
         id: 10,
+        title: "test-slice",
         role: "ready-for-agent",
         review: "agent",
         dependsOn: [],
