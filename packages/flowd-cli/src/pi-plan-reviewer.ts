@@ -127,7 +127,7 @@ export class PiPlanReviewer {
       tools: [...PLAN_REVIEW_TOOLS, PLAN_VERDICT_TOOL],
       customTools: [submitPlanReview],
     });
-    await session.prompt(buildPlanReviewPrompt(prd, bodies));
+    await session.prompt(buildPlanReviewPrompt(parentId, prd, bodies));
 
     // Prose-only nudge: the verdict only counts via the tool.
     if (captured === null) {
@@ -162,21 +162,33 @@ export class PiPlanReviewer {
   }
 
   private async listChildren(parentId: number): Promise<number[]> {
-    const out = await this.gh([
-      "issue",
-      "list",
-      "--repo",
-      this.repo,
-      "--state",
-      "all",
-      "--limit",
-      "200",
-      "--json",
-      "number,body",
-    ]);
-    const issues = JSON.parse(out) as { number: number; body: string | null }[];
+    // Paginate through ALL issues in the repo so children beyond the first
+    // page are not silently dropped (a repo with >200 issues is common).
+    const all: { number: number; body: string | null }[] = [];
+    let page = 1;
+    let pageFull = true;
+    while (pageFull) {
+      const out = await this.gh([
+        "issue",
+        "list",
+        "--repo",
+        this.repo,
+        "--state",
+        "all",
+        "--limit",
+        "1000",
+        "--page",
+        String(page),
+        "--json",
+        "number,body",
+      ]);
+      const batch = JSON.parse(out) as { number: number; body: string | null }[];
+      all.push(...batch);
+      pageFull = batch.length === 1000;
+      page++;
+    }
     const parentRef = `Parent: #${parentId}`;
-    return issues.filter((i) => (i.body ?? "").includes(parentRef)).map((i) => i.number);
+    return all.filter((i) => (i.body ?? "").includes(parentRef)).map((i) => i.number);
   }
 }
 
@@ -186,7 +198,11 @@ export const PLAN_VERDICT_NUDGE =
   "this review is to call the `submit_plan_review` tool now, with `decision` (CLEAR or ESCALATE), " +
   "`risks`, and `childAgentReady`.";
 
-export function buildPlanReviewPrompt(prd: string, children: ChildBrief[]): string {
+export function buildPlanReviewPrompt(
+  parentId: number,
+  prd: string,
+  children: ChildBrief[],
+): string {
   const childSections = children
     .map((c) => `### Child #${c.id}\n\n${c.body || "(empty body)"}`)
     .join("\n\n---\n\n");
@@ -221,7 +237,7 @@ export function buildPlanReviewPrompt(prd: string, children: ChildBrief[]): stri
     "Do NOT write your decision as prose or a summary — it will be ignored. Call",
     "`submit_plan_review` exactly once.",
     "",
-    `## Parent PRD (#${children.length > 0 ? "parent" : "no children found"})`,
+    `## Parent PRD (#${parentId})`,
     prd,
     "",
     `## Child items (${children.length} total)`,

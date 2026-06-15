@@ -65,6 +65,7 @@ describe("buildPorts", () => {
     expect(typeof ports.forge.driftRefresh).toBe("function");
     expect(typeof ports.agent.implement).toBe("function");
     expect(typeof ports.agent.review).toBe("function");
+    expect(typeof ports.agent.planReview).toBe("function");
     expect(typeof ports.verify.run).toBe("function");
   });
 });

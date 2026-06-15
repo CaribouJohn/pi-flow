@@ -52,4 +52,29 @@ describe("parseConfig", () => {
       /provider/,
     );
   });
+
+  test("rejects valid implement/review but absent slice", () => {
+    expect(() =>
+      parseConfig({
+        ...VALID,
+        models: {
+          implement: { provider: "anthropic", id: "claude-opus-4-8" },
+          review: { provider: "openai", id: "gpt-5" },
+        },
+      }),
+    ).toThrow(/slice/);
+  });
+
+  test("rejects valid implement/review/slice but absent planReview", () => {
+    expect(() =>
+      parseConfig({
+        ...VALID,
+        models: {
+          implement: { provider: "anthropic", id: "claude-opus-4-8" },
+          review: { provider: "openai", id: "gpt-5" },
+          slice: { provider: "anthropic", id: "claude-opus-4-8" },
+        },
+      }),
+    ).toThrow(/planReview/);
+  });
 });

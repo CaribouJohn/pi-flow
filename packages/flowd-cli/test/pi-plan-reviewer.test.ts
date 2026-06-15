@@ -14,7 +14,7 @@ const MODEL = { provider: "openai", id: "gpt-5" };
 
 describe("buildPlanReviewPrompt", () => {
   test("includes the PRD body and child items", () => {
-    const p = buildPlanReviewPrompt("THE PRD", [
+    const p = buildPlanReviewPrompt(1, "THE PRD", [
       { id: 10, body: "child 10 body" },
       { id: 11, body: "child 11 body" },
     ]);
@@ -24,31 +24,37 @@ describe("buildPlanReviewPrompt", () => {
   });
 
   test("includes the three semantic smells in the instructions", () => {
-    const p = buildPlanReviewPrompt("PRD", [{ id: 10, body: "body" }]);
+    const p = buildPlanReviewPrompt(1, "PRD", [{ id: 10, body: "body" }]);
     expect(p).toContain("ADR conflict");
     expect(p).toContain("Irreversible migration");
     expect(p).toContain("Security surface");
   });
 
   test("instructs to call submit_plan_review", () => {
-    const p = buildPlanReviewPrompt("PRD", [{ id: 10, body: "body" }]);
+    const p = buildPlanReviewPrompt(1, "PRD", [{ id: 10, body: "body" }]);
     expect(p).toContain("submit_plan_review");
   });
 
   test("handles empty children list gracefully", () => {
-    const p = buildPlanReviewPrompt("PRD with no children", []);
+    const p = buildPlanReviewPrompt(1, "PRD with no children", []);
     expect(p).toContain("PRD with no children");
     expect(p).toContain("no child items found");
     expect(p).toContain("escalate");
   });
 
   test("includes child count in heading", () => {
-    const p = buildPlanReviewPrompt("PRD", [
+    const p = buildPlanReviewPrompt(1, "PRD", [
       { id: 1, body: "one" },
       { id: 2, body: "two" },
       { id: 3, body: "three" },
     ]);
     expect(p).toContain("3 total");
+  });
+
+  test("includes the actual parent issue number in the PRD heading", () => {
+    const p = buildPlanReviewPrompt(42, "PRD body", [{ id: 10, body: "child" }]);
+    expect(p).toContain("## Parent PRD (#42)");
+    expect(p).not.toContain("#parent");
   });
 });
 
