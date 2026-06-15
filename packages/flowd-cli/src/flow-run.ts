@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import {
   type AgentPort,
   type OrchestratorPorts,
@@ -82,6 +82,23 @@ async function ensureWorkdir(repo: string, workdir: string): Promise<void> {
   }
 }
 
+/**
+ * The agent's sandbox clone MUST live outside the repo flowd was launched in.
+ * When it is nested inside (e.g. a relative `.flowd-workdir`), the coding
+ * agent's tools can resolve paths up into the operator's real checkout and
+ * write slice code there (a leak found dogfooding PRD-0003 that survived even
+ * chdir-ing into the workdir). Refuse to run rather than risk the live tree.
+ */
+export function assertWorkdirIsolated(workdir: string, repoRoot: string): void {
+  const w = resolve(workdir);
+  const r = resolve(repoRoot);
+  if (w === r || w.startsWith(r + sep)) {
+    throw new Error(
+      `workdir "${w}" is inside the repo "${r}". The agent sandbox must be OUTSIDE the operated repo — set config "workdir" to an absolute path elsewhere.`,
+    );
+  }
+}
+
 /** Drive one track's slice loop (S0–S8) to a fixpoint with the real adapters. */
 export async function runFlow(config: FlowdConfig, trackId: number): Promise<RunResult> {
   // Use only credential-store keys, never ambient env (ADR-0029).
@@ -91,6 +108,8 @@ export async function runFlow(config: FlowdConfig, trackId: number): Promise<Run
   // credential file still resolves there.
   const workdir = resolve(config.workdir);
   const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  // Fail fast if the sandbox is nested in the operator's repo (leak guard).
+  assertWorkdirIsolated(workdir, process.cwd());
   const resolved: FlowdConfig = { ...config, workdir };
   await ensureWorkdir(resolved.repo, workdir);
   const ports = buildPorts(resolved, credentials);

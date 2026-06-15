@@ -1,7 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import type { FlowdConfig } from "../src/config.ts";
-import { buildPorts, makeVerifyGate } from "../src/flow-run.ts";
+import { assertWorkdirIsolated, buildPorts, makeVerifyGate } from "../src/flow-run.ts";
 import { makeCredentials } from "./helpers.ts";
+
+describe("assertWorkdirIsolated (leak guard)", () => {
+  test("rejects a workdir nested inside the repo", () => {
+    expect(() => assertWorkdirIsolated("/repo/.flowd-workdir", "/repo")).toThrow(
+      /OUTSIDE the operated repo/,
+    );
+  });
+  test("rejects the repo root itself", () => {
+    expect(() => assertWorkdirIsolated("/repo", "/repo")).toThrow(/inside the repo/);
+  });
+  test("accepts a workdir outside the repo", () => {
+    expect(() => assertWorkdirIsolated("/work/flowd", "/repo")).not.toThrow();
+  });
+  test("accepts a sibling sharing a name prefix (not a real ancestor)", () => {
+    expect(() => assertWorkdirIsolated("/repo-sandbox", "/repo")).not.toThrow();
+  });
+});
 
 describe("makeVerifyGate", () => {
   test("green when the command exits 0", async () => {
