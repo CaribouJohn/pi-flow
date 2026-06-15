@@ -81,7 +81,7 @@ describe("PiPlanReviewer.review", () => {
         if (args[0] === "issue" && args[1] === "view") {
           return `body of #${args[2]}`;
         }
-        if (args[0] === "issue" && args[1] === "list") {
+        if (args[0] === "api" && args[1] === "--paginate") {
           return JSON.stringify([
             { number: 10, body: "child 10\nParent: #1" },
             { number: 11, body: "child 11\nParent: #1" },
@@ -176,6 +176,136 @@ describe("PiPlanReviewer.review", () => {
     expect(tools()).not.toContain("edit");
   });
 
+  test("listChildren uses gh api --paginate (not issue list --limit)", async () => {
+    const calls: string[][] = [];
+    const rev = new PiPlanReviewer({
+      repo: "o/r",
+      workdir: "/wd",
+      model: MODEL,
+      credentials: makeCredentials({ openai: "sk" }),
+      gh: async (args) => {
+        calls.push(args);
+        if (args[0] === "issue" && args[1] === "view") return "body";
+        if (args[0] === "api" && args[1] === "--paginate") {
+          return JSON.stringify([{ number: 10, body: "child\nParent: #1" }]);
+        }
+        return "";
+      },
+      sessionFactory: async (sopts) => ({
+        prompt: async () => {
+          const tool = sopts.customTools?.[0];
+          if (tool) {
+            const exec = tool.execute as unknown as (
+              id: string,
+              p: ToolVerdict,
+            ) => Promise<unknown>;
+            await exec("c", {
+              decision: "CLEAR",
+              risks: [],
+              childAgentReady: { "10": { pass: true } },
+            });
+          }
+        },
+      }),
+    });
+    await rev.review(1);
+    const listCall = calls.find((a) => a[0] === "api" && a[1] === "--paginate");
+    expect(listCall).toBeDefined();
+    expect(listCall?.[2]).toContain("repos/o/r/issues");
+    // Must NOT fall back to the old `gh issue list` approach
+    expect(calls.every((a) => !(a[0] === "issue" && a[1] === "list"))).toBe(true);
+  });
+
+  test("listChildren returns children beyond the first 1000 (no silent cap)", async () => {
+    // Simulate gh api --paginate returning a combined 1200-item array (what the
+    // CLI merges from multiple pages). All matching children must be found.
+    const allIssues = Array.from({ length: 1200 }, (_, i) => ({
+      number: i + 1,
+      body: i >= 999 ? "child\nParent: #77" : "unrelated",
+    }));
+    // Verify that review() attempts to fetch bodies for issues beyond index 999
+    // (i.e. #1000+) — something the old --limit 1000 cap would have silently dropped.
+    const viewedIds: number[] = [];
+    const rev2 = new PiPlanReviewer({
+      repo: "o/r",
+      workdir: "/wd",
+      model: MODEL,
+      credentials: makeCredentials({ openai: "sk" }),
+      gh: async (args) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          viewedIds.push(Number(args[2]));
+          return "prd body";
+        }
+        if (args[0] === "api" && args[1] === "--paginate") return JSON.stringify(allIssues);
+        return "";
+      },
+      sessionFactory: async (sopts) => ({
+        prompt: async () => {
+          const tool = sopts.customTools?.[0];
+          if (tool) {
+            const exec = tool.execute as unknown as (
+              id: string,
+              p: ToolVerdict,
+            ) => Promise<unknown>;
+            const ready: Record<string, { pass: boolean }> = {};
+            for (const id of viewedIds.filter((n) => n !== 77)) ready[String(id)] = { pass: true };
+            await exec("c", { decision: "CLEAR", risks: [], childAgentReady: ready });
+          }
+        },
+      }),
+    });
+    await rev2.review(77);
+    // Issues 1000–1200 have `Parent: #77`; all should have been fetched.
+    const childIds = viewedIds.filter((n) => n !== 77);
+    expect(childIds.length).toBe(201); // indices 999..1199 => numbers 1000..1200
+    expect(childIds).toContain(1000);
+    expect(childIds).toContain(1200);
+  });
+
+  test("listChildren excludes pull requests from REST response", async () => {
+    const viewedIds: number[] = [];
+    const rev = new PiPlanReviewer({
+      repo: "o/r",
+      workdir: "/wd",
+      model: MODEL,
+      credentials: makeCredentials({ openai: "sk" }),
+      gh: async (args) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          viewedIds.push(Number(args[2]));
+          return "body";
+        }
+        if (args[0] === "api" && args[1] === "--paginate") {
+          return JSON.stringify([
+            { number: 10, body: "child\nParent: #1" }, // issue — keep
+            { number: 20, body: "PR child\nParent: #1", pull_request: { url: "https://..." } }, // PR — drop
+            { number: 30, body: "other" }, // unrelated — skip
+          ]);
+        }
+        return "";
+      },
+      sessionFactory: async (sopts) => ({
+        prompt: async () => {
+          const tool = sopts.customTools?.[0];
+          if (tool) {
+            const exec = tool.execute as unknown as (
+              id: string,
+              p: ToolVerdict,
+            ) => Promise<unknown>;
+            await exec("c", {
+              decision: "CLEAR",
+              risks: [],
+              childAgentReady: { "10": { pass: true } },
+            });
+          }
+        },
+      }),
+    });
+    await rev.review(1);
+    expect(viewedIds).toContain(10); // the real issue child
+    expect(viewedIds).not.toContain(20); // the PR must be excluded
+    expect(viewedIds).not.toContain(30); // unrelated
+  });
+
   test("throws without an API key", async () => {
     const { rev } = reviewer({ key: false });
     await expect(rev.review(1)).rejects.toThrow(/no API key/);
@@ -193,7 +323,7 @@ describe("PiPlanReviewer.review", () => {
           bodies.push(`view:${args[2]}`);
           return `body #${args[2]}`;
         }
-        if (args[0] === "issue" && args[1] === "list") {
+        if (args[0] === "api" && args[1] === "--paginate") {
           return JSON.stringify([
             { number: 10, body: "c10\nParent: #1" },
             { number: 11, body: "c11\nParent: #1" },

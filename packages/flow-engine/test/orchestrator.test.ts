@@ -211,4 +211,59 @@ describe("decide — pure scheduler", () => {
   test("is done when all slices are closed", () => {
     expect(decide(base({ closed: true }), 2)).toEqual({ kind: "done" });
   });
+
+  test("closes a slice whose PR was merged out-of-band (§8.8)", () => {
+    const w = base({
+      assignee: "flow-bot",
+      branch: "slice/10",
+      pr: { number: 42, base: "track/test", status: "merged", reviewAttempts: 0 },
+    });
+    expect(decide(w, 2)).toEqual({ kind: "close", sliceId: 10 });
+  });
+});
+
+describe("runTrack — out-of-band merged PR detection (§8.8)", () => {
+  test("a slice whose PR was merged outside the loop is closed, never re-implemented", async () => {
+    const flow = makeFakeFlow({
+      slices: [
+        {
+          id: 10,
+          assignee: "flow-bot",
+          branch: "slice/10",
+          pr: { number: 42, base: "track/test", status: "merged", reviewAttempts: 0 },
+        },
+      ],
+    });
+
+    const result = await runTrack(flow.ports, 1, OPTS);
+
+    expect(result.outcome).toBe("fixpoint");
+    expect(result.steps.map((s) => s.action)).toContain("close"); // explicit close step
+    expect(flow.counts.implement).toEqual([]); // never re-implemented
+    expect(flow.counts.merged).toEqual([]); // the forge merge op was NOT called
+    expect(flow.slice(10).closed).toBe(true); // tracker item closed
+    expect(flow.comments.some((c) => c.body.includes("merged outside the loop"))).toBe(true);
+  });
+
+  test("out-of-band merge closes the slice and allows remaining slices to proceed", async () => {
+    const flow = makeFakeFlow({
+      slices: [
+        {
+          id: 10,
+          assignee: "flow-bot",
+          branch: "slice/10",
+          pr: { number: 42, base: "track/test", status: "merged", reviewAttempts: 0 },
+        },
+        // slice 11 depends on 10; once 10 is closed it becomes assignable.
+        { id: 11, dependsOn: [10] },
+      ],
+    });
+
+    const result = await runTrack(flow.ports, 1, OPTS);
+
+    expect(result.outcome).toBe("fixpoint");
+    expect(flow.slice(10).closed).toBe(true); // merged-out-of-band, closed
+    expect(flow.slice(11).closed).toBe(true); // normal flow picked up slice 11
+    expect(flow.counts.implement.map((i) => i.sliceId)).toEqual([11]); // only slice 11 implemented
+  });
 });
