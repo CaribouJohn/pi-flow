@@ -118,7 +118,11 @@ export class GitHubTrackerAdapter implements TrackerPort {
   }
 
   async setRole(itemId: number, role: Role): Promise<void> {
-    // Remove all existing role labels, then add the target.
+    // Remove all existing role labels, then add the target. A remove can fail
+    // simply because the label isn't present (expected) — but it can also fail
+    // on a real error (network/auth), which combined with a succeeding add
+    // would leave a corrupted multi-role state. Don't swallow silently: log so
+    // the failure is visible rather than producing a silent inconsistency.
     for (const r of ROLE_LABELS) {
       await this.run([
         "issue",
@@ -128,7 +132,11 @@ export class GitHubTrackerAdapter implements TrackerPort {
         this.repo,
         "--remove-label",
         r,
-      ]).catch(() => {});
+      ]).catch((err) => {
+        console.warn(
+          `[github-tracker] setRole: removing label "${r}" from #${itemId} failed (ignored): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
     }
     await this.run(["issue", "edit", String(itemId), "--repo", this.repo, "--add-label", role]);
   }
