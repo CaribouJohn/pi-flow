@@ -185,36 +185,6 @@ function clearVerdictFor(ids: number[]) {
   return { decision: "CLEAR" as const, risks: [] as string[], childAgentReady };
 }
 
-describe("runPlanPipeline — clear path (T12 → T13)", () => {
-  test("writes the slice plan, clears the gate, and returns the full output", async () => {
-    const flow = makeFakeFlow({
-      trackId: 1,
-      trackRole: "needs-slicing",
-      trackBranch: "track/test",
-      slices: [],
-    });
-
-    const verdict = clearVerdictFor([101, 102]);
-    // Override the plan-review agent to use our verdict.
-    // makeFakeFlow already sets it via planReviewVerdict, but the child ids
-    // are auto-generated. We'll patch after creation.
-
-    const result = await runPlanPipeline(flow.ports, BASE_CONFIG, {
-      issue: 1,
-      prd: "# PRD\n\nTest feature",
-      plan: CANNED_PLAN,
-    });
-
-    // The fake uses a default planReviewVerdict from makeFakeFlow if configured.
-    // The ids created by writeSlicePlan are auto-assigned (101, 102, etc.).
-    // Since makeFakeFlow without planReviewVerdict throws, we need to supply one.
-    // But the verdict references child ids that are auto-generated!
-    //
-    // This test exercises the full pipeline with the default fake (which will
-    // escalate due to no verdict). We'll test the clear path by re-configuring.
-  });
-});
-
 describe("runPlanPipeline — clear path with configured verdict", () => {
   test("clears the gate when slices pass agent-ready and plan-review says CLEAR", async () => {
     // We need the verdict's childAgentReady keys to match the auto-generated
