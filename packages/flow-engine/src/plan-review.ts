@@ -10,7 +10,7 @@
  * re-runs are idempotent (SPEC §8.8). The fakes record them verbatim; real
  * adapters will deduplicate on the marker prefix.
  */
-import type { PlanReviewVerdict, Role, Track, World } from "./domain.ts";
+import type { PlanReviewVerdict, World } from "./domain.ts";
 import { type RunOptions, disclaim, readWorld } from "./orchestrator.ts";
 import type { OrchestratorPorts } from "./ports.ts";
 
@@ -65,12 +65,13 @@ export function combineVerdict(world: World, verdict: PlanReviewVerdict | null):
   }
 
   // 2. Agent named risks (both CLEAR+risks and ESCALATE paths)
-  for (const r of verdict.risks) {
+  const agentRisks = verdict.risks ?? [];
+  for (const r of agentRisks) {
     risks.push(r);
   }
 
   // 3. Agent ESCALATE without explicit risks — flag it
-  if (verdict.decision === "ESCALATE" && verdict.risks.length === 0) {
+  if (verdict.decision === "ESCALATE" && agentRisks.length === 0) {
     risks.push("Agent escalated without naming specific risks");
   }
 
