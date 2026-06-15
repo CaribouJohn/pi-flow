@@ -162,25 +162,22 @@ export class PiPlanReviewer {
   }
 
   private async listChildren(parentId: number): Promise<number[]> {
-    // `gh issue list` has NO --page flag (it errors), so a single --limit fetch
-    // is the correct call; --limit 1000 covers typical repos. True pagination
-    // beyond that would need `gh api --paginate` (deferred — repos this size are
-    // rare). Children are matched by the `Parent: #<n>` marker in their body.
-    const out = await this.gh([
-      "issue",
-      "list",
-      "--repo",
-      this.repo,
-      "--state",
-      "all",
-      "--limit",
-      "1000",
-      "--json",
-      "number,body",
-    ]);
-    const all = JSON.parse(out) as { number: number; body: string | null }[];
+    // Use `gh api --paginate` to fetch ALL issues without a per-call cap.
+    // `gh issue list --limit` tops out at 1000 and silently drops the rest.
+    // The REST /issues endpoint also returns pull-requests — filter those out
+    // by dropping any item that carries a `pull_request` key.
+    // Children are matched by the `Parent: #<n>` marker in their body.
+    const out = await this.gh(["api", "--paginate", `repos/${this.repo}/issues?state=all`]);
+    const all = JSON.parse(out) as {
+      number: number;
+      body: string | null;
+      pull_request?: unknown;
+    }[];
     const parentRef = `Parent: #${parentId}`;
-    return all.filter((i) => (i.body ?? "").includes(parentRef)).map((i) => i.number);
+    return all
+      .filter((i) => i.pull_request === undefined)
+      .filter((i) => (i.body ?? "").includes(parentRef))
+      .map((i) => i.number);
   }
 }
 
