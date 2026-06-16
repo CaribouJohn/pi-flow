@@ -8,10 +8,15 @@ const MODEL = { provider: "anthropic", id: "claude-opus-4-8" };
 
 describe("buildImplementPrompt", () => {
   test("includes the brief", () => {
-    expect(buildImplementPrompt("add add(a,b)")).toContain("add add(a,b)");
+    expect(buildImplementPrompt("add add(a,b)", "bun run verify")).toContain("add add(a,b)");
+  });
+  test("includes the exact verify command and forbids a subset (#144)", () => {
+    const p = buildImplementPrompt("brief", "bun run verify");
+    expect(p).toContain("bun run verify");
+    expect(p).toContain("not a self-chosen subset");
   });
   test("appends prior review findings when present", () => {
-    const p = buildImplementPrompt("brief", ["handle zero", "add a test"]);
+    const p = buildImplementPrompt("brief", "bun run verify", ["handle zero", "add a test"]);
     expect(p).toContain("previous review");
     expect(p).toContain("- handle zero");
     expect(p).toContain("- add a test");
@@ -28,6 +33,7 @@ describe("PiImplementer.implement", () => {
       repo: "o/r",
       workdir: "/wd",
       trackBranch: "track/x",
+      verifyCommand: "bun run verify",
       model: MODEL,
       credentials: creds,
       sessionFactory: async (opts) => {
@@ -71,6 +77,7 @@ describe("PiImplementer.implement", () => {
       repo: "o/r",
       workdir: "/wd",
       trackBranch: "track/x",
+      verifyCommand: "bun run verify",
       model: MODEL,
       credentials: makeCredentials({ anthropic: "sk" }),
       sessionFactory: async () => ({ prompt: async () => ZERO_SLICE_COST }),
@@ -87,6 +94,7 @@ describe("PiImplementer.implement", () => {
       repo: "o/r",
       workdir: "/wd",
       trackBranch: "track/x",
+      verifyCommand: "bun run verify",
       model: MODEL,
       credentials: makeCredentials({ anthropic: "sk" }),
       sessionFactory: async () => ({ prompt: async () => ZERO_SLICE_COST }),

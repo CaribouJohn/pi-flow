@@ -126,13 +126,16 @@ describe("GitForgeAdapter — git ops run in the workdir", () => {
     expect(calls.every((c) => c.cmd !== "git" || c.cwd === "/wd")).toBe(true);
   });
 
-  test("createSliceBranch creates slice/<id> off the track branch when it doesn't exist", async () => {
+  test("createSliceBranch creates slice/<id> off origin/<track> when it doesn't exist (#151)", async () => {
     const { run, calls } = makeFake(); // git branch --list → "" ⇒ new
     const branch = await new GitForgeAdapter(OPTS(run)).createSliceBranch(2, "track/x");
     expect(branch).toBe("slice/2");
     const git = calls.filter((c) => c.cmd === "git").map((c) => c.args.join(" "));
-    expect(git).toContain("checkout track/x");
-    expect(git).toContain("checkout -b slice/2"); // -b (create), not -B (reset)
+    expect(git).toContain("fetch origin"); // refresh the remote ref first
+    // Base off the authoritative origin track (not the possibly-stale local
+    // branch), so a sibling merged earlier this run is included. -b (create), not -B.
+    expect(git).toContain("checkout -b slice/2 origin/track/x");
+    expect(git.some((g) => g.includes("-B slice/2"))).toBe(false); // never force-reset
   });
 
   test("createSliceBranch REUSES an existing slice branch — never -B-resets unpushed work (§8.8)", async () => {
