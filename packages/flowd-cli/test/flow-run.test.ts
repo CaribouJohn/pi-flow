@@ -123,7 +123,54 @@ import {
   listNeedsPlanReviewWithPrd,
   listNeedsSlicingWithPrd,
   parsePrdPath,
+  resolveTrackBranch,
 } from "../src/flow-run.ts";
+
+// ── resolveTrackBranch ──────────────────────────────────────────────────────
+
+describe("resolveTrackBranch", () => {
+  function makeBodyTracker(body: string) {
+    return { getItemBody: async (_id: number) => body };
+  }
+
+  test("returns Track-branch marker when present in body", async () => {
+    const tracker = makeBodyTracker(
+      "PRD: docs/foo.md\nTrack-branch: track/0005-continuous-daemon\n",
+    );
+    expect(await resolveTrackBranch(106, tracker, "track/fallback")).toBe(
+      "track/0005-continuous-daemon",
+    );
+  });
+
+  test("returns fallback when Track-branch marker is absent", async () => {
+    const tracker = makeBodyTracker("PRD: docs/foo.md\n");
+    expect(await resolveTrackBranch(106, tracker, "track/0005-continuous-daemon")).toBe(
+      "track/0005-continuous-daemon",
+    );
+  });
+
+  test("trims whitespace from marker value", async () => {
+    const tracker = makeBodyTracker("Track-branch:  track/spaced  \n");
+    expect(await resolveTrackBranch(1, tracker, "track/fallback")).toBe("track/spaced");
+  });
+
+  test("returns fallback when body is empty", async () => {
+    const tracker = makeBodyTracker("");
+    expect(await resolveTrackBranch(1, tracker, "track/config-branch")).toBe("track/config-branch");
+  });
+
+  test("passes the given trackId to getItemBody", async () => {
+    let seenId: number | undefined;
+    const tracker = {
+      getItemBody: async (id: number) => {
+        seenId = id;
+        return "";
+      },
+    };
+    await resolveTrackBranch(42, tracker, "track/x");
+    expect(seenId).toBe(42);
+  });
+});
 
 describe("parsePrdPath", () => {
   test("extracts path from PRD: line", () => {

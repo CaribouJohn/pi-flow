@@ -156,6 +156,18 @@ export async function runPlanGate(
   await ports.tracker.setRole(trackId, "tracking");
   await ports.forge.createTrackBranch(track.branch);
 
+  // Record the branch as an authoritative `Track-branch:` marker in the parent
+  // body so that `runFlow` / the daemon can resolve it without deriving from
+  // the trackId (SPEC §0-aligned state in the tracker).  Idempotent: skip when
+  // the marker is already present (e.g. plan-gate re-run after a partial failure).
+  const currentBody = await ports.tracker.getItemBody(trackId);
+  const branchMarker = `Track-branch: ${track.branch}`;
+  if (!currentBody.includes(branchMarker)) {
+    const trimmed = currentBody.trim();
+    const newBody = trimmed.length > 0 ? `${trimmed}\n\n${branchMarker}\n` : `${branchMarker}\n`;
+    await ports.tracker.updateBody(trackId, newBody);
+  }
+
   const lines = [
     "[plan-gate] Plan review cleared.",
     `Track branch \`${track.branch}\` created off \`main\`.`,

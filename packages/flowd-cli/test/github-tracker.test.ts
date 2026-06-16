@@ -8,6 +8,7 @@ import {
   parseParent,
   parseReview,
   parseRole,
+  parseTrackBranch,
 } from "../src/github-tracker.ts";
 
 describe("parseIssueNumber", () => {
@@ -161,8 +162,8 @@ describe("GitHubTrackerAdapter", () => {
       calls.push(args);
       if (args[0] === "issue" && args[1] === "list") return issuesJson;
       if (args[0] === "issue" && args[1] === "view") {
-        // Simulate `gh issue view --json labels` for getParentRole
-        return JSON.stringify({ labels: [{ name: "tracking" }] });
+        // Simulate `gh issue view --json labels,body` for getTrack
+        return JSON.stringify({ labels: [{ name: "tracking" }], body: null });
       }
       return "";
     };
@@ -194,16 +195,39 @@ describe("GitHubTrackerAdapter", () => {
     });
   });
 
-  test("getTrack derives the branch from trackId (track/<id>) and returns the parent role", async () => {
-    const { run } = fakeRunner();
+  test("getTrack reads Track-branch marker from body and returns it as the branch", async () => {
+    const calls: string[][] = [];
+    const run: GhRunner = async (args) => {
+      calls.push(args);
+      return JSON.stringify({
+        labels: [{ name: "tracking" }],
+        body: "PRD: docs/prd/0005-foo.md\nTrack-branch: track/0005-continuous-daemon\n",
+      });
+    };
     const tracker = new GitHubTrackerAdapter({ repo: "o/r", run });
-    expect(await tracker.getTrack(1)).toEqual({ id: 1, branch: "track/1", role: "tracking" });
+    expect(await tracker.getTrack(106)).toEqual({
+      id: 106,
+      branch: "track/0005-continuous-daemon",
+      role: "tracking",
+    });
+    // Should fetch labels AND body in one call
+    expect(calls[0]).toContain("labels,body");
   });
 
-  test("getTrack uses trackId for branch — each tracking parent gets its own branch", async () => {
-    const { run } = fakeRunner();
+  test("getTrack falls back to opts.trackBranch when body has no marker", async () => {
+    const { run } = fakeRunner(); // fakeRunner returns body: null
+    const tracker = new GitHubTrackerAdapter({
+      repo: "o/r",
+      trackBranch: "track/slug-from-config",
+      run,
+    });
+    expect(await tracker.getTrack(1)).toMatchObject({ branch: "track/slug-from-config" });
+  });
+
+  test("getTrack falls back to track/<id> when no marker and no trackBranch option", async () => {
+    const { run } = fakeRunner(); // fakeRunner returns body: null, no trackBranch
     const tracker = new GitHubTrackerAdapter({ repo: "o/r", run });
-    // Different trackIds → different branches (no inter-track conflict).
+    // Legacy fallback: track/<id>
     expect(await tracker.getTrack(5)).toMatchObject({ id: 5, branch: "track/5" });
     expect(await tracker.getTrack(99)).toMatchObject({ id: 99, branch: "track/99" });
   });
@@ -291,5 +315,37 @@ describe("GitHubTrackerAdapter — listByRole", () => {
     expect(listCall).toBeDefined();
     expect(listCall).toContain("--limit");
     expect(listCall).toContain("200");
+  });
+});
+
+// ── parseTrackBranch ─────────────────────────────────────────────────────────
+
+describe("parseTrackBranch", () => {
+  test("returns the branch name from a Track-branch: line", () => {
+    expect(parseTrackBranch("Track-branch: track/0005-continuous-daemon\n")).toBe(
+      "track/0005-continuous-daemon",
+    );
+  });
+
+  test("trims whitespace around the value", () => {
+    expect(parseTrackBranch("Track-branch:  track/slug  ")).toBe("track/slug");
+  });
+
+  test("returns null when no Track-branch: line exists", () => {
+    expect(parseTrackBranch("PRD: docs/prd/foo.md\n## Details\nsome text")).toBeNull();
+  });
+
+  test("returns null for empty body", () => {
+    expect(parseTrackBranch("")).toBeNull();
+  });
+
+  test("is case-sensitive — track-branch: is not matched", () => {
+    expect(parseTrackBranch("track-branch: track/foo")).toBeNull();
+  });
+
+  test("finds marker anywhere in body (not only first line)", () => {
+    expect(parseTrackBranch("PRD: docs/foo.md\n\nTrack-branch: track/my-slug\n\n## Details")).toBe(
+      "track/my-slug",
+    );
   });
 });
