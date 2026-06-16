@@ -23,13 +23,23 @@ import { PiImplementer } from "./pi-implementer.ts";
 import { PiPlanReviewer } from "./pi-plan-reviewer.ts";
 import { PiReviewer } from "./pi-reviewer.ts";
 
-/** Runs a shell command in `cwd` and returns its exit code. */
-export type ShellRunner = (command: string, cwd: string) => Promise<number>;
+/** Runs a shell command in `cwd` and returns its exit code and combined output. */
+export type ShellRunner = (
+  command: string,
+  cwd: string,
+) => Promise<{ exitCode: number; output: string }>;
 
 const realShell: ShellRunner = async (command, cwd) => {
-  const res = await $`sh -c ${command}`.cwd(cwd).nothrow().quiet();
-  return res.exitCode;
+  const res = await $`sh -c ${command}`.cwd(cwd).nothrow();
+  const output = [res.stdout, res.stderr]
+    .map((b) => b.toString())
+    .join("")
+    .trimEnd();
+  return { exitCode: res.exitCode, output };
 };
+
+/** Maximum number of characters retained from verify output in a park comment. */
+const VERIFY_OUTPUT_CAP = 4000;
 
 /** The verify gate (S3): runs the profile's command in the workdir. */
 export function makeVerifyGate(
@@ -37,7 +47,15 @@ export function makeVerifyGate(
   command: string,
   shell: ShellRunner = realShell,
 ): VerifyGatePort {
-  return { run: async () => ({ green: (await shell(command, workdir)) === 0 }) };
+  return {
+    run: async () => {
+      const { exitCode, output } = await shell(command, workdir);
+      if (exitCode === 0) return { green: true };
+      const bounded =
+        output.length > VERIFY_OUTPUT_CAP ? `…${output.slice(-VERIFY_OUTPUT_CAP)}` : output;
+      return { green: false, output: bounded || "(no output)" };
+    },
+  };
 }
 
 /**
