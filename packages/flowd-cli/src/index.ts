@@ -6,6 +6,7 @@ import { acceptTrack } from "./flow-accept.ts";
 import { runPlan } from "./flow-plan.ts";
 import { rejectTrack } from "./flow-reject.ts";
 import { runFlow } from "./flow-run.ts";
+import { runStatus } from "./status.ts";
 
 const plan = planInvocation(process.argv.slice(2));
 if (plan.kind === "usage") {
@@ -77,6 +78,17 @@ try {
     }
     if (result.costEstimate) console.log(`cost: ${result.costEstimate}`);
     process.exit(result.gate === "clear" ? 0 : 1);
+  }
+
+  if (plan.kind === "status") {
+    const summary = await runStatus({
+      repo: config.repo,
+      workdir: config.workdir,
+      defaultBranch: config.defaultBranch,
+      credentialsPath: config.credentialsPath,
+    });
+    console.log(summary);
+    process.exit(0);
   }
 
   // plan.kind === "run"
