@@ -107,6 +107,14 @@ export interface DaemonHeartbeat {
   consecutiveErrors: number;
   /** OS PID of the daemon process. */
   pid: number;
+  /**
+   * Daemon health status (PRD-0005 §4.1).
+   * - `ok`       — last tick succeeded, backoff reset.
+   * - `degraded` — last tick threw a transient error; backing off + retrying.
+   * - `halted`   — last tick threw a fatal error; process is exiting non-zero.
+   * Absent in heartbeats written before this field was added.
+   */
+  status?: "ok" | "degraded" | "halted";
 }
 
 /** Daemon liveness classification derived from heartbeat age. */
@@ -292,11 +300,13 @@ export async function readHeartbeat(
     ) {
       return null;
     }
+    const status = h.status;
     return {
       lastTickAt: h.lastTickAt,
       activity: h.activity,
       consecutiveErrors: h.consecutiveErrors,
       pid: h.pid,
+      ...(status === "ok" || status === "degraded" || status === "halted" ? { status } : {}),
     };
   } catch {
     return null;
