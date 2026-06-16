@@ -265,6 +265,59 @@ describe("PiPlanReviewer.review", () => {
     expect(childIds).toContain(1200);
   });
 
+  test("listChildren finds children written with a ## Parent heading (to-issues form)", async () => {
+    // Regression: issues created by /to-issues write '## Parent\n\n#<n>' not 'Parent: #<n>'.
+    // parseParent handles both forms; the old substring match missed this.
+    const viewedIds: number[] = [];
+    const rev = new PiPlanReviewer({
+      repo: "o/r",
+      workdir: "/wd",
+      model: MODEL,
+      credentials: makeCredentials({ openai: "sk" }),
+      gh: async (args) => {
+        if (args[0] === "issue" && args[1] === "view") {
+          viewedIds.push(Number(args[2]));
+          return "body";
+        }
+        if (args[0] === "api" && args[1] === "--paginate") {
+          return JSON.stringify([
+            // heading form produced by /to-issues
+            { number: 10, body: "## Parent\n\n#42\n\nsome body" },
+            // inline form produced by flowd slicer
+            { number: 11, body: "some body\nParent: #42" },
+            // heading with a different parent — must NOT be included
+            { number: 20, body: "## Parent\n\n#99\n\nother" },
+            // completely unrelated
+            { number: 30, body: "no parent marker here" },
+          ]);
+        }
+        return "";
+      },
+      sessionFactory: async (sopts) => ({
+        prompt: async () => {
+          const tool = sopts.customTools?.[0];
+          if (tool) {
+            const exec = tool.execute as unknown as (
+              id: string,
+              p: ToolVerdict,
+            ) => Promise<unknown>;
+            await exec("c", {
+              decision: "CLEAR",
+              risks: [],
+              childAgentReady: { "10": { pass: true }, "11": { pass: true } },
+            });
+          }
+          return ZERO_SLICE_COST;
+        },
+      }),
+    });
+    await rev.review(42);
+    expect(viewedIds).toContain(10); // heading form
+    expect(viewedIds).toContain(11); // inline form
+    expect(viewedIds).not.toContain(20); // different parent
+    expect(viewedIds).not.toContain(30); // no parent marker
+  });
+
   test("listChildren excludes pull requests from REST response", async () => {
     const viewedIds: number[] = [];
     const rev = new PiPlanReviewer({

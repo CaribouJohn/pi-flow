@@ -22,18 +22,46 @@ describe("assertWorkdirIsolated (leak guard)", () => {
 
 describe("makeVerifyGate", () => {
   test("green when the command exits 0", async () => {
-    const gate = makeVerifyGate("/wd", "whatever", async () => 0);
+    const gate = makeVerifyGate("/wd", "whatever", async () => ({ exitCode: 0, output: "" }));
     expect(await gate.run(1)).toEqual({ green: true });
   });
   test("red when the command exits non-zero", async () => {
-    const gate = makeVerifyGate("/wd", "whatever", async () => 1);
-    expect(await gate.run(1)).toEqual({ green: false });
+    const gate = makeVerifyGate("/wd", "whatever", async () => ({ exitCode: 1, output: "" }));
+    expect(await gate.run(1)).toEqual({ green: false, output: "(no output)" });
+  });
+  test("red gate surfaces command output in the result", async () => {
+    const gate = makeVerifyGate("/wd", "bun run verify", async () => ({
+      exitCode: 1,
+      output: "error TS2345: Argument of type 'string' is not assignable",
+    }));
+    const result = await gate.run(1);
+    expect(result.green).toBe(false);
+    expect(result.output).toContain("TS2345");
+  });
+  test("green gate does not include output", async () => {
+    const gate = makeVerifyGate("/wd", "bun run verify", async () => ({
+      exitCode: 0,
+      output: "All tests passed",
+    }));
+    const result = await gate.run(1);
+    expect(result).toEqual({ green: true });
+    expect(result.output).toBeUndefined();
+  });
+  test("output is capped to 4000 chars when very long", async () => {
+    const longOutput = "x".repeat(5000);
+    const gate = makeVerifyGate("/wd", "whatever", async () => ({
+      exitCode: 1,
+      output: longOutput,
+    }));
+    const result = await gate.run(1);
+    expect(result.green).toBe(false);
+    expect(result.output?.length).toBeLessThanOrEqual(4001); // cap + leading ellipsis char
   });
   test("runs the configured command in the workdir", async () => {
     let seen: { cmd: string; cwd: string } | undefined;
     const gate = makeVerifyGate("/wd", "bun run verify", async (cmd, cwd) => {
       seen = { cmd, cwd };
-      return 0;
+      return { exitCode: 0, output: "" };
     });
     await gate.run(1);
     expect(seen).toEqual({ cmd: "bun run verify", cwd: "/wd" });

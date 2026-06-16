@@ -2,6 +2,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { PlanReviewVerdict } from "@pi-flow/flow-engine";
 import { Type } from "typebox";
 import type { CredentialStore } from "./credentials.ts";
+import { parseParent } from "./github-tracker.ts";
 import type { ModelId } from "./model-config.ts";
 import { type CodingSessionFactory, realGh, realSessionFactory } from "./pi-agent.ts";
 
@@ -173,10 +174,9 @@ export class PiPlanReviewer {
       body: string | null;
       pull_request?: unknown;
     }[];
-    const parentRef = `Parent: #${parentId}`;
     return all
       .filter((i) => i.pull_request === undefined)
-      .filter((i) => (i.body ?? "").includes(parentRef))
+      .filter((i) => parseParent(i.body ?? "") === parentId)
       .map((i) => i.number);
   }
 }

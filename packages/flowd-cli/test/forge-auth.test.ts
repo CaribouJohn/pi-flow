@@ -40,6 +40,19 @@ describe("readForgeToken", () => {
     expect(msg).toContain("RUNBOOK");
   });
 
+  test("error message instructs editing .flowd/credentials.json and does not reference flowd credentials set", async () => {
+    const store = makeCredentials({});
+    let msg = "";
+    try {
+      await readForgeToken(store);
+    } catch (err) {
+      msg = err instanceof Error ? err.message : String(err);
+    }
+    expect(msg).toContain(".flowd/credentials.json");
+    expect(msg).toContain(`"${FORGE_CREDENTIAL_KEY}"`);
+    expect(msg).not.toContain("flowd credentials set");
+  });
+
   test("returns the stored PAT when present (in-memory store)", async () => {
     const store = makeCredentials({ [FORGE_CREDENTIAL_KEY]: "ghp_in_memory_token" });
     expect(await readForgeToken(store)).toBe("ghp_in_memory_token");

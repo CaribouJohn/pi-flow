@@ -4,7 +4,7 @@
  *
  * No network, no tracker API — the tracker is an in-memory fake.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -284,6 +284,37 @@ describe("CostMeterAdapter.record", () => {
     await expect(
       adapter.record({ sliceId: 9, effort: undefined, cost: ZERO_SLICE_COST }),
     ).resolves.toBeUndefined();
+  });
+
+  test("does not throw when commitHistoryToTrack fails — logs a warning instead", async () => {
+    const tracker = makeTracker();
+    const path = join(tmpDir, "history.jsonl");
+    const hookError = new Error("authentication failed");
+    const adapter = new CostMeterAdapter({
+      config: meterConfig(path),
+      tracker,
+      implementModelId: "m1",
+      reviewModelId: "m2",
+      commitHistoryToTrack: async () => {
+        throw hookError;
+      },
+    });
+
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // Must not throw even though the hook rejects.
+      await expect(
+        adapter.record({ sliceId: 99, effort: "low", cost: cost(0.001) }),
+      ).resolves.toBeUndefined();
+
+      // A warning mentioning the error must have been emitted.
+      const warned = warnSpy.mock.calls.some((args) =>
+        args.some((a) => typeof a === "string" && a.includes("authentication failed")),
+      );
+      expect(warned).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   test("is idempotent — second call for same slice does not double-append JSONL", async () => {

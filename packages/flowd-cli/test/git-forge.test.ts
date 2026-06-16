@@ -415,6 +415,19 @@ describe("GitForgeAdapter — track PR / A1 (getTrackPr, openTrackPr, updatePrBo
     expect(list?.args).toContain("o/r");
   });
 
+  test("getTrackPr requests only number,baseRefName — no org/team fields (least-privilege PAT re-run)", async () => {
+    // Regression guard: org/team fields (login, name, slug) require read:org.
+    // The idempotent re-run must work with a Contents/Issues/PRs-only PAT.
+    const { run, calls } = makeFake();
+    await new GitForgeAdapter(OPTS(run)).getTrackPr("track/feature");
+    const list = calls.find((c) => c.cmd === "gh" && c.args[1] === "list");
+    const jsonIdx = list?.args.indexOf("--json") ?? -1;
+    const fields = jsonIdx >= 0 ? (list?.args[jsonIdx + 1] ?? "") : "";
+    expect(fields).toBe("number,baseRefName");
+    expect(fields).not.toContain("login"); // requires read:org
+    expect(fields).not.toContain("slug"); // requires read:org
+  });
+
   test("openTrackPr creates a PR with correct --head, --base, --title, --body args", async () => {
     const { run, calls } = makeFake({ prCreate: "https://github.com/o/r/pull/300\n" });
     const pr = await new GitForgeAdapter(OPTS(run)).openTrackPr({

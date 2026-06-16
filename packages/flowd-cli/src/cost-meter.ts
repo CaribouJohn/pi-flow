@@ -124,16 +124,11 @@ export function buildCostComment(
 // ── JSONL idempotency ─────────────────────────────────────────────────────────
 
 /**
- * Read all cost records from the history file.
- * Returns an empty array when the file is absent or unreadable.
+ * Parse cost records from a raw JSONL string.
+ * Exported so callers that obtain JSONL content via means other than the
+ * local filesystem (e.g. `git show`) can reuse the same parsing logic.
  */
-export async function readCostRecords(historyPath: string): Promise<CostHistoryRecord[]> {
-  let raw: string;
-  try {
-    raw = await readFile(historyPath, "utf8");
-  } catch {
-    return [];
-  }
+export function parseCostRecordsFromString(raw: string): CostHistoryRecord[] {
   const records: CostHistoryRecord[] = [];
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
@@ -146,6 +141,20 @@ export async function readCostRecords(historyPath: string): Promise<CostHistoryR
     }
   }
   return records;
+}
+
+/**
+ * Read all cost records from the history file.
+ * Returns an empty array when the file is absent or unreadable.
+ */
+export async function readCostRecords(historyPath: string): Promise<CostHistoryRecord[]> {
+  let raw: string;
+  try {
+    raw = await readFile(historyPath, "utf8");
+  } catch {
+    return [];
+  }
+  return parseCostRecordsFromString(raw);
 }
 
 /**
@@ -202,6 +211,12 @@ export interface CostMeterAdapterOptions {
   reviewModelId: string;
   /** Prefixed to every tracker write (the profile's AI disclaimer). */
   aiDisclaimer?: string;
+  /**
+   * Called after a new record is successfully appended to the history file.
+   * Intended for committing the file to the track branch so it accrues across
+   * runs.  Errors are swallowed — never halts the build.
+   */
+  commitHistoryToTrack?: () => Promise<void>;
 }
 
 /**
@@ -217,6 +232,7 @@ export class CostMeterAdapter implements CostMeterPort {
   private readonly implementModelId: string;
   private readonly reviewModelId: string;
   private readonly aiDisclaimer: string | undefined;
+  private readonly commitHistoryToTrack: (() => Promise<void>) | undefined;
 
   constructor(opts: CostMeterAdapterOptions) {
     this.config = opts.config;
@@ -225,6 +241,7 @@ export class CostMeterAdapter implements CostMeterPort {
     this.implementModelId = opts.implementModelId;
     this.reviewModelId = opts.reviewModelId;
     this.aiDisclaimer = opts.aiDisclaimer;
+    this.commitHistoryToTrack = opts.commitHistoryToTrack;
   }
 
   async record(params: {
@@ -255,6 +272,7 @@ export class CostMeterAdapter implements CostMeterPort {
     }
 
     // 2. Append to cost-history JSONL (idempotent).
+    let appended = false;
     try {
       const record: CostHistoryRecord = {
         sliceId,
@@ -267,13 +285,26 @@ export class CostMeterAdapter implements CostMeterPort {
         estUSD,
         ts: new Date().toISOString(),
       };
-      await appendCostRecord(this.config.historyPath, record);
+      appended = await appendCostRecord(this.config.historyPath, record);
     } catch (err) {
       console.warn(
         `[cost-meter] history append failed for slice #${sliceId} (ignored): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
+    }
+
+    // 3. Commit the history file to the track branch so calibrate can read it.
+    if (appended && this.commitHistoryToTrack !== undefined) {
+      try {
+        await this.commitHistoryToTrack();
+      } catch (err) {
+        console.warn(
+          `[cost-meter] history commit failed for slice #${sliceId} (ignored): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
   }
 }
