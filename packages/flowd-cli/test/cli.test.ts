@@ -8,6 +8,7 @@ describe("parseArgs", () => {
       track: 7,
       issue: undefined,
       prd: undefined,
+      reason: undefined,
       config: "c.json",
     });
   });
@@ -18,6 +19,7 @@ describe("parseArgs", () => {
       track: undefined,
       issue: undefined,
       prd: undefined,
+      reason: undefined,
       config: undefined,
     });
   });
@@ -28,6 +30,7 @@ describe("parseArgs", () => {
       track: undefined,
       issue: undefined,
       prd: undefined,
+      reason: undefined,
       config: undefined,
     });
   });
@@ -38,6 +41,7 @@ describe("parseArgs", () => {
       track: undefined,
       issue: 5,
       prd: "docs/prd/foo.md",
+      reason: undefined,
       config: undefined,
     });
   });
@@ -48,6 +52,7 @@ describe("parseArgs", () => {
       track: undefined,
       issue: 5,
       prd: "p.md",
+      reason: undefined,
       config: "c.json",
     });
   });
