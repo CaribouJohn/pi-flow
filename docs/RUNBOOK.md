@@ -62,6 +62,12 @@ excludes from merging `main` directly (ADR-0038, invariant #1 layer 3).
    - **Contents:** Read & Write (push branches)
    - **Issues:** Read & Write (create/label issues, post comments)
    - **Pull requests:** Read & Write (open/merge PRs)
+
+   > **No `read:org` needed.** These three permissions are sufficient for
+   > both the initial `flowd accept` run (opens the PR) and every idempotent
+   > re-run (looks up the existing PR by head branch). The lookup only queries
+   > `number` and `baseRefName` — no org/team fields (`login`/`name`/`slug`).
+
 4. Copy the token (it is shown only once).
 
 ### 3c. Branch-protection precondition (ADR-0038)
