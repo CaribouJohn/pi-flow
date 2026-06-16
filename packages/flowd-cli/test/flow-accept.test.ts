@@ -65,7 +65,6 @@ describe("buildAcceptanceSummary", () => {
     sliceIds: new Set([20, 21]),
     protectionWarning: null,
     aiDisclaimer: "[ai]",
-    defaultBranch: "main",
   };
 
   test("includes the AI disclaimer", () => {

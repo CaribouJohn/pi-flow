@@ -317,6 +317,78 @@ describe("GitForgeAdapter — getMainProtection", () => {
   });
 });
 
+describe("GitForgeAdapter — track PR / A1 (getTrackPr, openTrackPr, updatePrBody)", () => {
+  test("getTrackPr returns null when no open PR exists for the head branch", async () => {
+    const { run } = makeFake(); // prList defaults to "[]"
+    const pr = await new GitForgeAdapter(OPTS(run)).getTrackPr("track/feature");
+    expect(pr).toBeNull();
+  });
+
+  test("getTrackPr returns the open PR when one exists", async () => {
+    const prJson = JSON.stringify([{ number: 55, baseRefName: "main" }]);
+    const { run } = makeFake({ prList: prJson });
+    const pr = await new GitForgeAdapter(OPTS(run)).getTrackPr("track/feature");
+    expect(pr).toEqual({ number: 55, base: "main", status: "open", reviewAttempts: 0 });
+  });
+
+  test("getTrackPr passes --head, --base defaultBranch, --state open to gh pr list", async () => {
+    const { run, calls } = makeFake();
+    await new GitForgeAdapter(OPTS(run)).getTrackPr("track/feature");
+    const list = calls.find((c) => c.cmd === "gh" && c.args[1] === "list");
+    expect(list?.args).toContain("--head");
+    expect(list?.args).toContain("track/feature");
+    expect(list?.args).toContain("--base");
+    expect(list?.args).toContain("main"); // defaultBranch from OPTS
+    expect(list?.args).toContain("--state");
+    expect(list?.args).toContain("open");
+    expect(list?.args).toContain("--repo");
+    expect(list?.args).toContain("o/r");
+  });
+
+  test("openTrackPr creates a PR with correct --head, --base, --title, --body args", async () => {
+    const { run, calls } = makeFake({ prCreate: "https://github.com/o/r/pull/300\n" });
+    const pr = await new GitForgeAdapter(OPTS(run)).openTrackPr({
+      head: "track/feature",
+      base: "main",
+      title: "Acceptance: track/feature → main",
+      body: "PR body here",
+    });
+    expect(pr).toEqual({ number: 300, base: "main", status: "open", reviewAttempts: 0 });
+    const create = calls.find((c) => c.cmd === "gh" && c.args[1] === "create");
+    expect(create?.args).toContain("--head");
+    expect(create?.args).toContain("track/feature");
+    expect(create?.args).toContain("--base");
+    expect(create?.args).toContain("main");
+    expect(create?.args).toContain("--title");
+    expect(create?.args).toContain("Acceptance: track/feature → main");
+    expect(create?.args).toContain("--body");
+    expect(create?.args).toContain("PR body here");
+  });
+
+  test("openTrackPr throws on an unparseable PR number", async () => {
+    const { run } = makeFake({ prCreate: "not-a-url\n" });
+    await expect(
+      new GitForgeAdapter(OPTS(run)).openTrackPr({
+        head: "track/feature",
+        base: "main",
+        title: "t",
+        body: "b",
+      }),
+    ).rejects.toThrow(/could not parse PR number/);
+  });
+
+  test("updatePrBody calls gh pr edit with the PR number, --repo, and --body", async () => {
+    const { run, calls } = makeFake();
+    await new GitForgeAdapter(OPTS(run)).updatePrBody(77, "updated body text");
+    const edit = calls.find((c) => c.cmd === "gh" && c.args[1] === "edit");
+    expect(edit?.args).toContain("77");
+    expect(edit?.args).toContain("--repo");
+    expect(edit?.args).toContain("o/r");
+    expect(edit?.args).toContain("--body");
+    expect(edit?.args).toContain("updated body text");
+  });
+});
+
 describe("checkMainProtectionWarning (pure)", () => {
   test("returns null when both requiresPr and requiresNonAuthorApproval are true", () => {
     expect(

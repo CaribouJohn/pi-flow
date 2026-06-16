@@ -287,7 +287,12 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     },
     getMainProtection: async () =>
       config.mainProtection ?? { requiresPr: true, requiresNonAuthorApproval: true },
-    getTrackPr: async (_headBranch: string) => {
+    getTrackPr: async (headBranch: string) => {
+      if (headBranch !== track.branch) {
+        throw new Error(
+          `fake: getTrackPr called with branch "${headBranch}" but track branch is "${track.branch}"`,
+        );
+      }
       const pr = config.trackPr ?? null;
       return pr === null ? null : { ...pr };
     },

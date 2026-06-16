@@ -128,7 +128,6 @@ export async function acceptTrackPipeline(
     sliceIds,
     protectionWarning,
     aiDisclaimer: config.aiDisclaimer,
-    defaultBranch: config.defaultBranch,
   });
 
   const prTitle = `Acceptance: ${track.branch} → ${config.defaultBranch}`;
@@ -206,7 +205,6 @@ export interface SummaryParams {
   sliceIds: Set<number>;
   protectionWarning: string | null;
   aiDisclaimer: string;
-  defaultBranch: string;
 }
 
 /**
@@ -223,7 +221,6 @@ export function buildAcceptanceSummary(params: SummaryParams): string {
     sliceIds,
     protectionWarning,
     aiDisclaimer,
-    defaultBranch,
   } = params;
 
   const lines: string[] = [];

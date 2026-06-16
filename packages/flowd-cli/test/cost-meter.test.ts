@@ -5,7 +5,7 @@
  * No network, no tracker API — the tracker is an in-memory fake.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,7 @@ import {
   appendCostRecord,
   buildCostComment,
   estimateSliceCost,
+  readCostRecords,
 } from "../src/cost-meter.ts";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -301,6 +302,76 @@ describe("CostMeterAdapter.record", () => {
     const raw = await readFile(path, "utf8");
     const lines = raw.trim().split("\n").filter(Boolean);
     expect(lines).toHaveLength(1); // only one record for slice 11
+  });
+});
+
+// ── readCostRecords ───────────────────────────────────────────────────────────
+
+describe("readCostRecords", () => {
+  function makeRec(sliceId: number): CostHistoryRecord {
+    return {
+      sliceId,
+      effort: "medium",
+      roles: ["implement", "review"],
+      implementModel: "m1",
+      reviewModel: "m2",
+      totalTokens: 300,
+      costUSD: 0.005,
+      estUSD: 0.004,
+      ts: "2025-01-01T00:00:00Z",
+    };
+  }
+
+  test("returns empty array when the file does not exist", async () => {
+    const path = join(tmpDir, "nonexistent.jsonl");
+    const records = await readCostRecords(path);
+    expect(records).toEqual([]);
+  });
+
+  test("parses valid JSONL records in order", async () => {
+    const path = join(tmpDir, "history.jsonl");
+    await writeFile(
+      path,
+      `${[JSON.stringify(makeRec(10)), JSON.stringify(makeRec(20))].join("\n")}\n`,
+    );
+    const records = await readCostRecords(path);
+    expect(records).toHaveLength(2);
+    expect(records[0]?.sliceId).toBe(10);
+    expect(records[1]?.sliceId).toBe(20);
+  });
+
+  test("skips malformed JSON lines without throwing", async () => {
+    const path = join(tmpDir, "history.jsonl");
+    await writeFile(path, `not-valid-json\n${JSON.stringify(makeRec(5))}\n`);
+    const records = await readCostRecords(path);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.sliceId).toBe(5);
+  });
+
+  test("skips records whose sliceId is not a number", async () => {
+    const path = join(tmpDir, "history.jsonl");
+    await writeFile(
+      path,
+      `{"sliceId":"not-a-number","costUSD":0.01}\n${JSON.stringify(makeRec(42))}\n`,
+    );
+    const records = await readCostRecords(path);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.sliceId).toBe(42);
+  });
+
+  test("skips blank lines", async () => {
+    const path = join(tmpDir, "history.jsonl");
+    await writeFile(path, `\n\n${JSON.stringify(makeRec(7))}\n\n`);
+    const records = await readCostRecords(path);
+    expect(records).toHaveLength(1);
+    expect(records[0]?.sliceId).toBe(7);
+  });
+
+  test("returns empty array when file contains only blank lines", async () => {
+    const path = join(tmpDir, "history.jsonl");
+    await writeFile(path, "\n\n\n");
+    const records = await readCostRecords(path);
+    expect(records).toEqual([]);
   });
 });
 
