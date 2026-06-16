@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ZERO_SLICE_COST } from "@pi-flow/flow-engine";
 import type { CredentialStore } from "../src/credentials.ts";
 import { PiImplementer, buildImplementPrompt } from "../src/pi-implementer.ts";
 import { makeCredentials } from "./helpers.ts";
@@ -34,6 +35,7 @@ describe("PiImplementer.implement", () => {
         return {
           prompt: async (t) => {
             prompts.push(t);
+            return ZERO_SLICE_COST;
           },
         };
       },
@@ -71,7 +73,7 @@ describe("PiImplementer.implement", () => {
       trackBranch: "track/x",
       model: MODEL,
       credentials: makeCredentials({ anthropic: "sk" }),
-      sessionFactory: async () => ({ prompt: async () => {} }),
+      sessionFactory: async () => ({ prompt: async () => ZERO_SLICE_COST }),
       gh: async () => "brief",
       commit: async () => false,
       checkout: async () => {},
@@ -87,12 +89,13 @@ describe("PiImplementer.implement", () => {
       trackBranch: "track/x",
       model: MODEL,
       credentials: makeCredentials({ anthropic: "sk" }),
-      sessionFactory: async () => ({ prompt: async () => {} }),
+      sessionFactory: async () => ({ prompt: async () => ZERO_SLICE_COST }),
       gh: async () => "brief",
       commit: async () => false, // agent made no new changes — already done
       checkout: async () => {},
       hasCommitsAhead: async () => true, // but the branch already carries the work
     });
-    await expect(impl.implement({ sliceId: 2, branch: "slice/2" })).resolves.toBeUndefined();
+    // implement() now returns SliceCost (not void)
+    await expect(impl.implement({ sliceId: 2, branch: "slice/2" })).resolves.toBeDefined();
   });
 });

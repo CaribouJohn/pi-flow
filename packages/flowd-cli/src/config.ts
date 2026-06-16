@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { CostEstimatorConfig } from "./cost-estimator.ts";
+import type { CostMeterConfig } from "./cost-meter.ts";
 import { type RoleModelConfig, validateRoleModelConfig } from "./model-config.ts";
 
 /**
@@ -25,6 +26,9 @@ export interface FlowdConfig {
   /** All values are PROVISIONAL v1 guesses — calibration is PRD-0004.
    *  Optional: if absent, cost estimation is skipped. */
   costEstimator?: CostEstimatorConfig;
+  /** Cost-meter configuration (actual vs. estimate tracking).
+   *  Optional: if absent, actual-cost metering is skipped. */
+  costMeter?: CostMeterConfig;
 }
 
 export async function loadConfig(path: string): Promise<FlowdConfig> {
@@ -60,6 +64,7 @@ export function parseConfig(input: unknown): FlowdConfig {
     credentialsPath: str(o, "credentialsPath"),
     models: parseModels(o.models),
     costEstimator: parseCostEstimator(o.costEstimator),
+    costMeter: parseCostMeter(o.costMeter),
   };
   // Fail fast on a same-model pair (invariant #2) before any work runs.
   validateRoleModelConfig(config.models);
@@ -204,6 +209,34 @@ function parseEffortToModel(input: unknown): CostEstimatorConfig["effortToModel"
     };
   }
   return result as CostEstimatorConfig["effortToModel"];
+}
+
+// ── Cost meter config parsing ──────────────────────────────────────────────
+
+function parseCostMeter(input: unknown): CostMeterConfig | undefined {
+  if (input === undefined) return undefined;
+  if (typeof input !== "object" || input === null) {
+    throw new Error(
+      "flowd config.costMeter must be an object with overrunThresholdFraction and historyPath",
+    );
+  }
+  const cm = input as Record<string, unknown>;
+  const config: CostMeterConfig = {
+    overrunThresholdFraction: num(cm, "overrunThresholdFraction"),
+    historyPath: str(cm, "historyPath"),
+  };
+  return config;
+}
+
+export function validateCostMeterConfig(cm: CostMeterConfig): void {
+  if (cm.overrunThresholdFraction <= 0) {
+    throw new Error(
+      `flowd config.costMeter.overrunThresholdFraction must be > 0 (got ${cm.overrunThresholdFraction})`,
+    );
+  }
+  if (cm.historyPath.trim().length === 0) {
+    throw new Error("flowd config.costMeter.historyPath must be a non-empty string");
+  }
 }
 
 /**

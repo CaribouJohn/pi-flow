@@ -19,6 +19,42 @@ export type Role =
 
 /** Orthogonal axes (SPEC §3). */
 export type Effort = "low" | "medium" | "high";
+
+/**
+ * Metered cost of one agent role session (implement or review).
+ * Tokens mirror the SDK's `Usage` shape; `costUSD` is the sum of
+ * cost.total across all `prompt()` calls in that session.
+ */
+export interface SliceCost {
+  costUSD: number;
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+/** Zero-value `SliceCost` — the identity element for accumulation. */
+export const ZERO_SLICE_COST: SliceCost = {
+  costUSD: 0,
+  totalTokens: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+};
+
+/** Add two `SliceCost` values together. */
+export function addSliceCosts(a: SliceCost, b: SliceCost): SliceCost {
+  return {
+    costUSD: a.costUSD + b.costUSD,
+    totalTokens: a.totalTokens + b.totalTokens,
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+  };
+}
 export type ReviewPolicy = "agent" | "human";
 export type Category = "bug" | "enhancement";
 
