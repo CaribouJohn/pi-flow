@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { runCalibrate } from "./calibrate.ts";
 import { planInvocation } from "./cli.ts";
 import { loadConfig } from "./config.ts";
 import { acceptTrack } from "./flow-accept.ts";
@@ -13,6 +14,20 @@ if (plan.kind === "usage") {
 }
 
 const configPath = plan.config ?? process.env.FLOWD_CONFIG ?? "flowd.config.json";
+
+// calibrate is read-only and works with or without a full config.
+if (plan.kind === "calibrate") {
+  try {
+    const config = await loadConfig(configPath).catch(() => undefined);
+    const historyPath = config?.costMeter?.historyPath ?? ".flowd/cost-history.jsonl";
+    await runCalibrate(historyPath, config?.costEstimator);
+  } catch (err) {
+    console.error("flowd calibrate failed:", err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 try {
   const config = await loadConfig(configPath);
 
