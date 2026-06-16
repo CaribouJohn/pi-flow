@@ -91,6 +91,26 @@ export interface ForgePort {
    * branch has no protection rule (personal/sandbox repos). Never throws.
    */
   getMainProtection(): Promise<MainProtection>;
+  /**
+   * Look up the open track→main PR by head branch (A1 idempotent re-run).
+   * Returns null when no open PR exists with that head.
+   */
+  getTrackPr(headBranch: string): Promise<PullRequest | null>;
+  /**
+   * Open the track→main PR (A1). The base is always the default branch.
+   * The engine never merges this PR — parking for the human is invariant #1.
+   */
+  openTrackPr(params: {
+    head: string;
+    base: string;
+    title: string;
+    body: string;
+  }): Promise<PullRequest>;
+  /**
+   * Replace the body of an existing PR (A1 idempotent re-run: body may change
+   * if slices were added/re-run since the PR was first opened).
+   */
+  updatePrBody(prNumber: number, newBody: string): Promise<void>;
 }
 
 /** Context handed to an agent role for one slice. */

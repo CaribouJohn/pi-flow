@@ -64,6 +64,8 @@ export interface FakeConfig {
    * so existing tests are unaffected.
    */
   mainProtection?: MainProtection;
+  /** Pre-existing track→main PR (for A1 idempotent re-run tests). */
+  trackPr?: PullRequest | null;
 }
 
 interface Rec {
@@ -107,6 +109,10 @@ export interface FakeFlow {
     createdItems: { parentId: number; title: string; id: number; role: Role }[];
     /** Dependency writes via setDependencies: (itemId, dependsOn[]). */
     dependencyWrites: { id: number; dependsOn: number[] }[];
+    /** Track PR opens via openTrackPr (A1). */
+    openedTrackPr: { head: string; base: string; title: string; body: string }[];
+    /** PR body updates via updatePrBody (A1 re-run). */
+    updatedPrBodies: { prNumber: number; newBody: string }[];
   };
 }
 
@@ -159,6 +165,8 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     planReview: [],
     createdItems: [],
     dependencyWrites: [],
+    openedTrackPr: [],
+    updatedPrBodies: [],
   };
   let prCounter = 100;
 
@@ -279,6 +287,23 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     },
     getMainProtection: async () =>
       config.mainProtection ?? { requiresPr: true, requiresNonAuthorApproval: true },
+    getTrackPr: async (_headBranch: string) => {
+      const pr = config.trackPr ?? null;
+      return pr === null ? null : { ...pr };
+    },
+    openTrackPr: async (params) => {
+      const pr: PullRequest = {
+        number: ++prCounter,
+        base: params.base,
+        status: "open",
+        reviewAttempts: 0,
+      };
+      counts.openedTrackPr.push({ ...params });
+      return { ...pr };
+    },
+    updatePrBody: async (prNumber, newBody) => {
+      counts.updatedPrBodies.push({ prNumber, newBody });
+    },
   };
 
   const agent: AgentPort = {

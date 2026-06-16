@@ -145,4 +145,40 @@ describe("planInvocation", () => {
       expect(p.message).toContain("--prd");
     }
   });
+
+  // ── accept command ──
+
+  test("accept: valid invocation", () => {
+    expect(planInvocation(["accept", "--track", "7"])).toEqual({
+      kind: "accept",
+      track: 7,
+      config: undefined,
+    });
+  });
+
+  test("accept: with --config", () => {
+    expect(planInvocation(["accept", "--track", "3", "--config", "c.json"])).toEqual({
+      kind: "accept",
+      track: 3,
+      config: "c.json",
+    });
+  });
+
+  test("accept: missing --track is a usage error", () => {
+    expect(planInvocation(["accept"])).toMatchObject({ kind: "usage", code: 2 });
+  });
+
+  test("accept: non-numeric track is a usage error", () => {
+    expect(planInvocation(["accept", "--track", "abc"])).toMatchObject({
+      kind: "usage",
+      code: 2,
+    });
+  });
+
+  test("accept: zero track is a usage error", () => {
+    expect(planInvocation(["accept", "--track", "0"])).toMatchObject({
+      kind: "usage",
+      code: 2,
+    });
+  });
 });

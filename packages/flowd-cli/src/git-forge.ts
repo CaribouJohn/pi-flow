@@ -302,6 +302,67 @@ export class GitForgeAdapter implements ForgePort {
     }
     await this.git(["push", "-u", "origin", branch]);
   }
+
+  /**
+   * Look up the open track→main PR by head branch (A1 idempotent re-run).
+   * Returns null when no open PR exists with that head.
+   */
+  async getTrackPr(headBranch: string): Promise<PullRequest | null> {
+    const out = await this.gh([
+      "pr",
+      "list",
+      "--repo",
+      this.repo,
+      "--head",
+      headBranch,
+      "--base",
+      this.defaultBranch,
+      "--state",
+      "open",
+      "--json",
+      "number,baseRefName",
+    ]);
+    const prs = JSON.parse(out) as { number: number; baseRefName: string }[];
+    const pr = prs[0];
+    if (pr === undefined) return null;
+    return { number: pr.number, base: pr.baseRefName, status: "open", reviewAttempts: 0 };
+  }
+
+  /**
+   * Open the track→main PR (A1). The base is always the default branch.
+   * The engine never merges this PR — parking for the human is invariant #1.
+   */
+  async openTrackPr(params: {
+    head: string;
+    base: string;
+    title: string;
+    body: string;
+  }): Promise<PullRequest> {
+    const out = await this.gh([
+      "pr",
+      "create",
+      "--repo",
+      this.repo,
+      "--head",
+      params.head,
+      "--base",
+      params.base,
+      "--title",
+      params.title,
+      "--body",
+      params.body,
+    ]);
+    const number = parsePrNumber(out);
+    return { number, base: params.base, status: "open", reviewAttempts: 0 };
+  }
+
+  /**
+   * Replace the body of an existing PR (A1 idempotent re-run: body may change
+   * if slices were added/re-run since the PR was first opened).
+   */
+  async updatePrBody(prNumber: number, newBody: string): Promise<void> {
+    await this.gh(["pr", "edit", String(prNumber), "--repo", this.repo, "--body", newBody]);
+  }
 }
 
 // --- pure helpers (unit-tested directly) ---
@@ -383,7 +444,7 @@ function parseMarker(body: string): Marker | null {
   }
 }
 
-function parsePrNumber(ghCreateOutput: string): number {
+export function parsePrNumber(ghCreateOutput: string): number {
   const n = Number(ghCreateOutput.trim().split("/").pop());
   if (!Number.isInteger(n) || n <= 0)
     throw new Error(`could not parse PR number from: ${ghCreateOutput.trim()}`);
