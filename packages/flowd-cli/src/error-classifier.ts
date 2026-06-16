@@ -13,12 +13,21 @@ export type ErrorKind = "transient" | "fatal";
 /**
  * Classify an error thrown from the daemon tick function.
  *
- * Matching is purely on the error message string so the helper works with any
- * error shape produced by the forge adapters / GitHub CLI / config layer.
+ * Matching is done on the error message string AND (when the error is a Bun
+ * ShellError) the subprocess stderr, so git/gh diagnostic text is visible to
+ * the classifier even when the top-level message is only "exit code 128".
  */
 export function classifyError(err: unknown): ErrorKind {
   const message = err instanceof Error ? err.message : String(err);
   const lc = message.toLowerCase();
+
+  // Bun's ShellError exposes .stderr (and .stdout) as Buffer-like objects.
+  // Duck-type it so we don't import Bun types into a pure-logic module.
+  const shell = err as { stderr?: { toString(): string }; stdout?: { toString(): string } };
+  const stderrText = shell.stderr?.toString() ?? "";
+  const stdoutText = shell.stdout?.toString() ?? "";
+  const lcStderr = stderrText.toLowerCase();
+  const lcStdout = stdoutText.toLowerCase();
 
   // ── Fatal: authentication / authorisation ──────────────────────────────────
   if (
@@ -50,6 +59,23 @@ export function classifyError(err: unknown): ErrorKind {
   // ── Fatal: missing / unreadable credential ────────────────────────────────
   if (lc.includes("missing credential") || lc.includes("credential not found")) {
     return "fatal";
+  }
+
+  // ── Fatal: persistent git ref / repository errors (exit 128) ─────────────
+  // These are permanent failures — not network blips — so retrying forever is
+  // wrong.  The patterns appear in git stderr when a ref/SHA/branch is bad or
+  // when the working directory is not a git repo.
+  const gitRefPatterns = [
+    "not a commit",
+    "unknown revision",
+    "bad ref",
+    "not a git repository",
+    "cannot be created",
+  ];
+  for (const pat of gitRefPatterns) {
+    if (lc.includes(pat) || lcStderr.includes(pat) || lcStdout.includes(pat)) {
+      return "fatal";
+    }
   }
 
   // ── Transient: HTTP 5xx or 429 (rate-limit) ───────────────────────────────
