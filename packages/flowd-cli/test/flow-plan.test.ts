@@ -44,7 +44,7 @@ const VALID_CONFIG: FlowdConfig = {
 
 describe("buildPlanPorts", () => {
   test("composes tracker, forge, agent, and verify ports", () => {
-    const ports = buildPlanPorts(VALID_CONFIG, makeCredentials({}));
+    const ports = buildPlanPorts(VALID_CONFIG, makeCredentials({}), "ghp_fake_test_token");
     expect(typeof ports.tracker.listSlices).toBe("function");
     expect(typeof ports.tracker.createItem).toBe("function");
     expect(typeof ports.tracker.setDependencies).toBe("function");
@@ -59,21 +59,21 @@ describe("buildPlanPorts", () => {
   });
 
   test("implement throws in plan mode", async () => {
-    const ports = buildPlanPorts(VALID_CONFIG, makeCredentials({}));
+    const ports = buildPlanPorts(VALID_CONFIG, makeCredentials({}), "ghp_fake_test_token");
     await expect(ports.agent.implement({ sliceId: 1, branch: "x" })).rejects.toThrow(
       "not available in plan mode",
     );
   });
 
   test("review throws in plan mode", async () => {
-    const ports = buildPlanPorts(VALID_CONFIG, makeCredentials({}));
+    const ports = buildPlanPorts(VALID_CONFIG, makeCredentials({}), "ghp_fake_test_token");
     await expect(ports.agent.review({ sliceId: 1, branch: "x" })).rejects.toThrow(
       "not available in plan mode",
     );
   });
 
   test("verify gate is always green in plan mode", async () => {
-    const ports = buildPlanPorts(VALID_CONFIG, makeCredentials({}));
+    const ports = buildPlanPorts(VALID_CONFIG, makeCredentials({}), "ghp_fake_test_token");
     expect(await ports.verify.run(1)).toEqual({ green: true });
   });
 });

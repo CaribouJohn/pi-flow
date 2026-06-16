@@ -16,6 +16,8 @@
  */
 import type { TrackerPort } from "@pi-flow/flow-engine";
 import type { FlowdConfig } from "./config.ts";
+import { FileCredentialStore } from "./credentials.ts";
+import { makeForgeGhRunner, readForgeToken } from "./forge-auth.ts";
 import { GitHubTrackerAdapter } from "./github-tracker.ts";
 
 export interface RejectInput {
@@ -67,9 +69,13 @@ export async function rejectTrackPipeline(
  * Does NOT close the acceptance issue — the track remains open.
  */
 export async function rejectTrack(input: RejectInput): Promise<RejectOutput> {
+  const credentials = new FileCredentialStore(input.config.credentialsPath);
+  // Fail fast if the forge PAT is absent — never fall back to ambient auth.
+  const forgeToken = await readForgeToken(credentials);
   const tracker = new GitHubTrackerAdapter({
     repo: input.config.repo,
     trackBranch: input.config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
   });
   return rejectTrackPipeline(tracker, input.track, input.reason, input.config.aiDisclaimer);
 }

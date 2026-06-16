@@ -23,6 +23,8 @@ import type { ForgePort, MainProtection, PullRequest, TrackerPort } from "@pi-fl
 import type { FlowdConfig } from "./config.ts";
 import type { CostHistoryRecord } from "./cost-meter.ts";
 import { readCostRecords } from "./cost-meter.ts";
+import { FileCredentialStore } from "./credentials.ts";
+import { makeForgeGhRunner, makeForgeRunner, readForgeToken } from "./forge-auth.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
 import { checkMainProtectionWarning } from "./git-forge.ts";
 import { GitHubTrackerAdapter } from "./github-tracker.ts";
@@ -172,15 +174,21 @@ export async function acceptTrackPipeline(
 export async function acceptTrack(input: AcceptInput): Promise<AcceptOutput> {
   const { config } = input;
 
+  const credentials = new FileCredentialStore(config.credentialsPath);
+  // Fail fast if the forge PAT is absent — never fall back to ambient auth.
+  const forgeToken = await readForgeToken(credentials);
+
   const tracker = new GitHubTrackerAdapter({
     repo: config.repo,
     trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
   });
 
   const forge = new GitForgeAdapter({
     repo: config.repo,
     workdir: config.workdir,
     defaultBranch: config.defaultBranch,
+    run: makeForgeRunner(forgeToken),
   });
 
   const costRecords = config.costMeter ? await readCostRecords(config.costMeter.historyPath) : [];

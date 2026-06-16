@@ -15,6 +15,7 @@ import { type CostEstimatorConfig, estimateTrackCost } from "./cost-estimator.ts
 import { CostMeterAdapter } from "./cost-meter.ts";
 import { type CredentialStore, FileCredentialStore } from "./credentials.ts";
 import { scrubProviderEnvKeys } from "./env-scrub.ts";
+import { makeForgeGhRunner, makeForgeRunner, readForgeToken } from "./forge-auth.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
 import { GitHubTrackerAdapter } from "./github-tracker.ts";
 import { PiImplementer } from "./pi-implementer.ts";
@@ -39,12 +40,21 @@ export function makeVerifyGate(
 }
 
 /** Compose the real adapters into the engine's ports. */
-export function buildPorts(config: FlowdConfig, credentials: CredentialStore): OrchestratorPorts {
-  const tracker = new GitHubTrackerAdapter({ repo: config.repo, trackBranch: config.trackBranch });
+export function buildPorts(
+  config: FlowdConfig,
+  credentials: CredentialStore,
+  forgeToken: string,
+): OrchestratorPorts {
+  const tracker = new GitHubTrackerAdapter({
+    repo: config.repo,
+    trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
+  });
   const forge = new GitForgeAdapter({
     repo: config.repo,
     workdir: config.workdir,
     defaultBranch: config.defaultBranch,
+    run: makeForgeRunner(forgeToken),
   });
   const implementer = new PiImplementer({
     repo: config.repo,
@@ -143,11 +153,13 @@ export async function runFlow(config: FlowdConfig, trackId: number): Promise<Run
   // credential file still resolves there.
   const workdir = resolve(config.workdir);
   const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  // Fail fast if the forge PAT is absent — never fall back to ambient auth.
+  const forgeToken = await readForgeToken(credentials);
   // Fail fast if the sandbox is nested in the operator's repo (leak guard).
   assertWorkdirIsolated(workdir, process.cwd());
   const resolved: FlowdConfig = { ...config, workdir };
   await ensureWorkdir(resolved.repo, workdir);
-  const ports = buildPorts(resolved, credentials);
+  const ports = buildPorts(resolved, credentials, forgeToken);
 
   const opts = {
     reviewerIterationCap: config.reviewerIterationCap,
