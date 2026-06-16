@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { planInvocation } from "./cli.ts";
 import { loadConfig } from "./config.ts";
+import { acceptTrack } from "./flow-accept.ts";
 import { runPlan } from "./flow-plan.ts";
 import { rejectTrack } from "./flow-reject.ts";
 import { runFlow } from "./flow-run.ts";
@@ -14,6 +15,18 @@ if (plan.kind === "usage") {
 const configPath = plan.config ?? process.env.FLOWD_CONFIG ?? "flowd.config.json";
 try {
   const config = await loadConfig(configPath);
+
+  if (plan.kind === "accept") {
+    const result = await acceptTrack({ track: plan.track, config });
+    if (!result.ready) {
+      console.error("not ready — the following slices are still open:");
+      for (const reason of result.notReadyReasons ?? []) console.error(`  ${reason}`);
+      process.exit(1);
+    }
+    const action = result.created ? "opened" : "updated";
+    console.log(`pr: #${result.prNumber} (${action})`);
+    process.exit(0);
+  }
 
   if (plan.kind === "reject") {
     const result = await rejectTrack({ track: plan.track, reason: plan.reason, config });

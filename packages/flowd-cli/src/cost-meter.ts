@@ -124,6 +124,31 @@ export function buildCostComment(
 // ── JSONL idempotency ─────────────────────────────────────────────────────────
 
 /**
+ * Read all cost records from the history file.
+ * Returns an empty array when the file is absent or unreadable.
+ */
+export async function readCostRecords(historyPath: string): Promise<CostHistoryRecord[]> {
+  let raw: string;
+  try {
+    raw = await readFile(historyPath, "utf8");
+  } catch {
+    return [];
+  }
+  const records: CostHistoryRecord[] = [];
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    try {
+      const rec = JSON.parse(trimmed) as CostHistoryRecord;
+      if (typeof rec.sliceId === "number") records.push(rec);
+    } catch {
+      // ignore malformed lines
+    }
+  }
+  return records;
+}
+
+/**
  * Read the history file and return the set of slice IDs already recorded.
  * Returns an empty set when the file is absent or unreadable.
  */
