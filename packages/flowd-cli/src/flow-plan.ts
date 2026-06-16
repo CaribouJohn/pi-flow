@@ -13,6 +13,7 @@ import { type CostEstimatorConfig, estimateTrackCost } from "./cost-estimator.ts
 import { type CredentialStore, FileCredentialStore } from "./credentials.ts";
 import { scrubProviderEnvKeys } from "./env-scrub.ts";
 import { assertWorkdirIsolated, ensureWorkdir } from "./flow-run.ts";
+import { makeForgeGhRunner, makeForgeRunner, readForgeToken } from "./forge-auth.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
 import { GitHubTrackerAdapter } from "./github-tracker.ts";
 import { PiPlanReviewer } from "./pi-plan-reviewer.ts";
@@ -33,12 +34,18 @@ export function planCostEstimate(
 export function buildPlanPorts(
   config: FlowdConfig,
   credentials: CredentialStore,
+  forgeToken: string,
 ): OrchestratorPorts {
-  const tracker = new GitHubTrackerAdapter({ repo: config.repo, trackBranch: config.trackBranch });
+  const tracker = new GitHubTrackerAdapter({
+    repo: config.repo,
+    trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
+  });
   const forge = new GitForgeAdapter({
     repo: config.repo,
     workdir: config.workdir,
     defaultBranch: config.defaultBranch,
+    run: makeForgeRunner(forgeToken),
   });
   const planReviewer = new PiPlanReviewer({
     repo: config.repo,
@@ -119,7 +126,9 @@ export async function runPlan(input: PlanFlowInput): Promise<PlanFlowOutput> {
   }
 
   const credentials = new FileCredentialStore(credentialsPath);
-  const ports = buildPlanPorts(config, credentials);
+  // Fail fast if the forge PAT is absent — never fall back to ambient auth.
+  const forgeToken = await readForgeToken(credentials);
+  const ports = buildPlanPorts(config, credentials, forgeToken);
 
   // Fail fast if the sandbox is nested in the operator's repo (leak guard).
   assertWorkdirIsolated(workdir, process.cwd());

@@ -15,6 +15,13 @@ import { platform } from "node:process";
  */
 export const CREDENTIAL_SCHEMA_VERSION = 1;
 
+/**
+ * Reserved credential key for the forge PAT (GitHub personal access token).
+ * flowd reads this key and injects it as `GH_TOKEN` into every `gh`/`git`
+ * subprocess it spawns. Never falls back to ambient auth when absent.
+ */
+export const FORGE_CREDENTIAL_KEY = "forge";
+
 export interface CredentialStore {
   /** The stored key for a provider, or `null` if none is set. */
   get(provider: string): Promise<string | null>;
