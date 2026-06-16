@@ -76,7 +76,11 @@ export function makeCommitHistoryToTrack(
     // Step 3: Write the updated history file and stage it.
     await mkdir(dirname(absHistoryPath), { recursive: true });
     await writeFile(absHistoryPath, content, "utf8");
-    await $`git -C ${workdir} add ${relHistoryPath}`.quiet();
+    // Use -f (force) so the file is staged even when .flowd/ is listed in
+    // .gitignore, which is the typical project layout.  Without -f, git silently
+    // skips gitignored files and diff --cached returns 0 (nothing staged), so
+    // the history file never reaches the track branch.
+    await $`git -C ${workdir} add -f ${relHistoryPath}`.quiet();
 
     // Only commit when the file actually changed (idempotent guard).
     const diff = await $`git -C ${workdir} diff --cached --quiet`.nothrow().quiet();

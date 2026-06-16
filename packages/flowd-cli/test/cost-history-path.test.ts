@@ -5,19 +5,22 @@
  *   "Writer (meter) and reader (calibrate) must resolve the same committed path."
  *
  * Setup: a bare "origin" repo + a workdir clone, mirroring what flowd manages
- * at runtime.  The test:
- *  1. Appends a record via `appendCostRecord` (the meter's write path).
- *  2. Commits and pushes to origin (what `makeCommitHistoryToTrack` does).
- *  3. Reads back via `readCostRecordsFromGit` (the calibrate read path).
- *  4. Asserts the record round-trips intact.
+ * at runtime.  The repo's .gitignore explicitly lists `.flowd/` (the realistic
+ * production scenario) so these tests catch the silent-skip bug that plagued
+ * plain `git add` (without -f).
+ *
+ * The commit step uses the real `makeCommitHistoryToTrack` from flow-run.ts
+ * rather than a local copy — any drift between the production implementation
+ * and these tests is therefore impossible.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { join } from "node:path";
 import { $ } from "bun";
 import { readCostRecordsFromGit } from "../src/calibrate.ts";
 import { type CostHistoryRecord, appendCostRecord } from "../src/cost-meter.ts";
+import { makeCommitHistoryToTrack } from "../src/flow-run.ts";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -55,44 +58,23 @@ async function cloneWorkdir(origin: string): Promise<string> {
   return dir;
 }
 
+/**
+ * Seed the repo with an initial commit that includes a `.gitignore` excluding
+ * `.flowd/` — the realistic project layout.  Without this gitignore the tests
+ * would not catch the silent-skip bug triggered by plain `git add` (without -f).
+ */
 async function bootstrapRepo(workdir: string, trackBranch: string): Promise<void> {
-  // Need at least one commit on main so origin/HEAD exists.
-  await $`git -C ${workdir} commit --allow-empty -m "initial"`.quiet();
+  // .gitignore that mirrors the realistic scenario where .flowd/ is excluded.
+  await writeFile(join(workdir, ".gitignore"), ".flowd/\n", "utf8");
+  await $`git -C ${workdir} add .gitignore`.quiet();
+  await $`git -C ${workdir} commit -m "initial"`.quiet();
   await $`git -C ${workdir} push origin HEAD:main`.quiet();
   // Create and push the track branch.
   await $`git -C ${workdir} checkout -b ${trackBranch}`.quiet();
   await $`git -C ${workdir} push -u origin ${trackBranch}`.quiet();
 }
 
-/** Simulate what makeCommitHistoryToTrack does after appendCostRecord. */
-async function commitHistoryToTrack(
-  workdir: string,
-  trackBranch: string,
-  historyPath: string,
-): Promise<void> {
-  const absHistoryPath = resolve(workdir, historyPath);
-  // git paths must use forward slashes even on Windows.
-  const relHistoryPath = relative(workdir, absHistoryPath).replace(/\\/g, "/");
-
-  const content = await readFile(absHistoryPath, "utf8").catch(() => "");
-  if (content.trim().length === 0) return;
-
-  await $`git -C ${workdir} fetch origin`.quiet();
-  await $`git -C ${workdir} checkout -f -B ${trackBranch} origin/${trackBranch}`.quiet();
-
-  await mkdir(dirname(absHistoryPath), { recursive: true });
-  await writeFile(absHistoryPath, content, "utf8");
-  await $`git -C ${workdir} add ${relHistoryPath}`.quiet();
-
-  const diff = await $`git -C ${workdir} diff --cached --quiet`.nothrow().quiet();
-  if (diff.exitCode === 0) return;
-
-  const msg = "chore: update cost-history.jsonl";
-  await $`git -C ${workdir} -c user.name=${ACTOR} -c user.email=${ACTOR}@flowd commit -m ${msg}`.quiet();
-  await $`git -C ${workdir} push origin ${trackBranch}`.quiet();
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── Tests: writer ↔ reader round-trip ─────────────────────────────────────────
 
 describe("cost-history path agreement: writer path === calibrate reader path", () => {
   let workdir: string;
@@ -113,13 +95,14 @@ describe("cost-history path agreement: writer path === calibrate reader path", (
     const rec = makeRecord(42);
     const absPath = join(workdir, HISTORY_PATH);
 
-    // Writer: append the record (meter's write path, using the absolute path
-    // that resolves from workdir, matching what the chdir'd process sees).
+    // Writer: append the record (meter's write path).
     const appended = await appendCostRecord(absPath, rec);
     expect(appended).toBe(true);
 
-    // Commit to origin/track (what makeCommitHistoryToTrack does).
-    await commitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH);
+    // Commit to origin/track — use the REAL makeCommitHistoryToTrack so this
+    // test validates the production code, not a duplicate local copy.
+    const commit = makeCommitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH, ACTOR);
+    await commit();
 
     // Reader: calibrate reads via git show origin/<track>:<historyPath>.
     const records = await readCostRecordsFromGit(workdir, TRACK_BRANCH, HISTORY_PATH);
@@ -136,7 +119,8 @@ describe("cost-history path agreement: writer path === calibrate reader path", (
 
     for (const sliceId of [10, 20, 30]) {
       await appendCostRecord(absPath, makeRecord(sliceId));
-      await commitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH);
+      const commit = makeCommitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH, ACTOR);
+      await commit();
     }
 
     const records = await readCostRecordsFromGit(workdir, TRACK_BRANCH, HISTORY_PATH);
@@ -149,12 +133,13 @@ describe("cost-history path agreement: writer path === calibrate reader path", (
     const rec = makeRecord(99);
 
     await appendCostRecord(absPath, rec);
-    await commitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH);
+    const commit = makeCommitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH, ACTOR);
+    await commit();
 
     // Second call: appendCostRecord skips (idempotent), commit is a no-op.
     const second = await appendCostRecord(absPath, rec);
     expect(second).toBe(false); // already recorded
-    await commitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH); // no-op
+    await commit(); // no-op
 
     const records = await readCostRecordsFromGit(workdir, TRACK_BRANCH, HISTORY_PATH);
     expect(records).toHaveLength(1);
@@ -164,6 +149,78 @@ describe("cost-history path agreement: writer path === calibrate reader path", (
   test("returns empty array when no history committed yet (first run before any slice)", async () => {
     // No appendCostRecord, no commit.
     const records = await readCostRecordsFromGit(workdir, TRACK_BRANCH, HISTORY_PATH);
+    expect(records).toEqual([]);
+  });
+
+  test(".flowd/ in .gitignore does not prevent the record from reaching the track branch", async () => {
+    // This test specifically guards against the `git add` (without -f) silent-skip
+    // bug.  The bootstrapped repo's .gitignore lists `.flowd/`, so a plain
+    // `git add` would silently skip the file and the record would never be
+    // committed.  `git add -f` must be used instead.
+    const absPath = join(workdir, HISTORY_PATH);
+    await appendCostRecord(absPath, makeRecord(7));
+
+    const commit = makeCommitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH, ACTOR);
+    await commit();
+
+    const records = await readCostRecordsFromGit(workdir, TRACK_BRANCH, HISTORY_PATH);
+    // If git add -f is NOT used, records will be empty because the gitignored
+    // file was never staged → never committed → git show returns nothing.
+    expect(records).toHaveLength(1);
+    expect(records[0]?.sliceId).toBe(7);
+  });
+});
+
+// ── Tests: readCostRecordsFromGit edge cases ──────────────────────────────────
+
+describe("readCostRecordsFromGit edge cases", () => {
+  let workdir: string;
+  let bareOrigin: string;
+
+  beforeEach(async () => {
+    bareOrigin = await initBareOrigin();
+    workdir = await cloneWorkdir(bareOrigin);
+    await bootstrapRepo(workdir, TRACK_BRANCH);
+  });
+
+  afterEach(async () => {
+    await rm(workdir, { recursive: true, force: true });
+    await rm(bareOrigin, { recursive: true, force: true });
+  });
+
+  test("returns [] when workdir does not exist", async () => {
+    const missing = join(tmpdir(), "flowd-does-not-exist-xyz-12345");
+    const records = await readCostRecordsFromGit(missing, TRACK_BRANCH, HISTORY_PATH);
+    expect(records).toEqual([]);
+  });
+
+  test("returns only valid records when the committed file contains malformed JSONL lines", async () => {
+    // Commit a JSONL file that mixes valid and invalid lines directly, bypassing
+    // appendCostRecord, so we can inject the malformed content.
+    const validRec = makeRecord(55);
+    const mixed = `${JSON.stringify(validRec)}\nnot-json-at-all\n{"broken": true, "missing-sliceId"}\n{"sliceId": "wrong-type"}\n`; // sliceId must be number — filtered
+
+    const absHistoryPath = join(workdir, HISTORY_PATH);
+    await mkdir(join(workdir, ".flowd"), { recursive: true });
+    await writeFile(absHistoryPath, mixed, "utf8");
+
+    // Stage with -f because .flowd/ is gitignored.
+    await $`git -C ${workdir} add -f ${HISTORY_PATH}`.quiet();
+    await $`git -C ${workdir} -c user.name=${ACTOR} -c user.email=${ACTOR}@flowd commit -m "test: malformed jsonl"`.quiet();
+    await $`git -C ${workdir} push origin ${TRACK_BRANCH}`.quiet();
+
+    const records = await readCostRecordsFromGit(workdir, TRACK_BRANCH, HISTORY_PATH);
+    // Only the one valid record (sliceId=55) should survive; malformed lines skipped.
+    expect(records).toHaveLength(1);
+    expect(records[0]?.sliceId).toBe(55);
+  });
+
+  test("returns [] when relHistoryPath resolves outside the repo (git show fails)", async () => {
+    // Pass an absolute path that lives outside the workdir.  resolve(workdir,
+    // absPath) returns the absolute path unchanged, relative() produces a
+    // traversal like "../../...", and git show rejects it → returns [].
+    const outsidePath = join(tmpdir(), "outside-flowd.jsonl");
+    const records = await readCostRecordsFromGit(workdir, TRACK_BRANCH, outsidePath);
     expect(records).toEqual([]);
   });
 });
