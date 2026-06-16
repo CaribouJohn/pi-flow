@@ -1718,3 +1718,127 @@ describe("runDaemon — extended pipeline (T12 / T13-T14 / A1)", () => {
     expect(heartbeats[0]!.activity).toBe("accept #4");
   });
 });
+
+// ── Phase A/B/D listing success paths reset backoff (review fix) ──────────────
+
+describe("runDaemon — listing success paths reset backoff", () => {
+  test("Phase A listing success after prior error resets consecutiveErrors and backoffMs", async () => {
+    // A transient error in cycle N leaves consecutiveErrors/backoffMs set.
+    // If Phase A listing in cycle N+1 succeeds, it must reset them so a
+    // subsequent per-item error in N+1 starts a fresh backoff from base.
+    const heartbeats: DaemonHeartbeat[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        backoffBaseMs: 50,
+        backoffMaxMs: 1_000,
+        listNeedsSlicingFn: async () => {
+          cycle++;
+          if (cycle === 1) throw new Error("GitHub unavailable"); // transient list error
+          return [{ id: 1, prdPath: "docs/prd/0001.md" }]; // succeeds on cycle 2+
+        },
+        sliceFn: async () => {
+          if (cycle === 2) throw new Error("network timeout"); // per-item transient on cycle 2
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          if (cycle >= 2) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Cycle 1: list error → backoff = 50
+    expect(sleeps[0]).toBe(50);
+    expect(heartbeats[0]).toMatchObject({ status: "degraded", consecutiveErrors: 1 });
+
+    // Cycle 2: list succeeds (resets state) → sliceFn errors → backoff restarts
+    // from base (50), NOT compounds to 100.
+    expect(sleeps[1]).toBe(50);
+    expect(heartbeats[1]).toMatchObject({ status: "degraded", consecutiveErrors: 1 });
+  });
+
+  test("Phase B listing success after prior error resets consecutiveErrors and backoffMs", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        backoffBaseMs: 50,
+        backoffMaxMs: 1_000,
+        listNeedsPlanReviewFn: async () => {
+          cycle++;
+          if (cycle === 1) throw new Error("GitHub unavailable");
+          return [{ id: 2, prdPath: "docs/prd/0002.md" }];
+        },
+        planFn: async () => {
+          if (cycle === 2) throw new Error("network timeout");
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          if (cycle >= 2) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Cycle 1: list error → backoff = 50
+    expect(sleeps[0]).toBe(50);
+    // Cycle 2: list succeeds (resets) → planFn errors → backoff restarts from base
+    expect(sleeps[1]).toBe(50);
+    expect(heartbeats[1]).toMatchObject({ status: "degraded", consecutiveErrors: 1 });
+  });
+
+  test("Phase D listing success after prior error resets consecutiveErrors and backoffMs", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        backoffBaseMs: 50,
+        backoffMaxMs: 1_000,
+        listAcceptReadyFn: async () => {
+          cycle++;
+          if (cycle === 1) throw new Error("GitHub unavailable");
+          return [4]; // succeeds on cycle 2+
+        },
+        acceptFn: async () => {
+          if (cycle === 2) throw new Error("network timeout");
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          if (cycle >= 2) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Cycle 1: list error → backoff = 50
+    expect(sleeps[0]).toBe(50);
+    // Cycle 2: list succeeds (resets) → acceptFn errors → backoff restarts from base
+    expect(sleeps[1]).toBe(50);
+    expect(heartbeats[1]).toMatchObject({ status: "degraded", consecutiveErrors: 1 });
+  });
+});

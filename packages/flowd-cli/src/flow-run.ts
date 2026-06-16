@@ -5,7 +5,9 @@ import {
   type AgentPort,
   type Effort,
   type OrchestratorPorts,
+  type Role,
   type RunResult,
+  type TrackerSlice,
   type VerifyGatePort,
   runPlanGate,
   runTrack,
@@ -274,6 +276,17 @@ export function parsePrdPath(body: string): string | null {
 }
 
 /**
+ * Minimal tracker interface required by the Phase A/B/D listing helpers.
+ * Satisfied by `GitHubTrackerAdapter`; exposed so tests can pass a fake
+ * without importing the real adapter (which needs live credentials).
+ */
+export interface ListingTracker {
+  listByRole(role: Role): Promise<number[]>;
+  getItemBody(id: number): Promise<string>;
+  listSlices(id: number): Promise<TrackerSlice[]>;
+}
+
+/**
  * Build a tracker adapter wired only with read credentials (no workdir needed).
  * Shared by the listing helpers below.
  */
@@ -291,15 +304,19 @@ async function makeTrackerAdapter(config: FlowdConfig): Promise<GitHubTrackerAda
  * Return `needs-slicing` parents that have a `PRD: <path>` body marker.
  * Issues without the marker are silently excluded.
  * Used by the daemon's Phase A each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
  */
 export async function listNeedsSlicingWithPrd(
   config: FlowdConfig,
+  tracker?: ListingTracker,
 ): Promise<{ id: number; prdPath: string }[]> {
-  const tracker = await makeTrackerAdapter(config);
-  const ids = await tracker.listByRole("needs-slicing");
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const ids = await t.listByRole("needs-slicing");
   const result: { id: number; prdPath: string }[] = [];
   for (const id of ids) {
-    const body = await tracker.getItemBody(id);
+    const body = await t.getItemBody(id);
     const prdPath = parsePrdPath(body);
     if (prdPath !== null) result.push({ id, prdPath });
   }
@@ -310,15 +327,19 @@ export async function listNeedsSlicingWithPrd(
  * Return `needs-plan-review` parents that have a `PRD: <path>` body marker.
  * Issues without the marker are silently excluded.
  * Used by the daemon's Phase B each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
  */
 export async function listNeedsPlanReviewWithPrd(
   config: FlowdConfig,
+  tracker?: ListingTracker,
 ): Promise<{ id: number; prdPath: string }[]> {
-  const tracker = await makeTrackerAdapter(config);
-  const ids = await tracker.listByRole("needs-plan-review");
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const ids = await t.listByRole("needs-plan-review");
   const result: { id: number; prdPath: string }[] = [];
   for (const id of ids) {
-    const body = await tracker.getItemBody(id);
+    const body = await t.getItemBody(id);
     const prdPath = parsePrdPath(body);
     if (prdPath !== null) result.push({ id, prdPath });
   }
@@ -329,13 +350,19 @@ export async function listNeedsPlanReviewWithPrd(
  * Return the issue numbers of `tracking` parents whose every non-acceptance
  * slice is closed (i.e. ready for the A1 accept-stage).
  * Used by the daemon's Phase D each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
  */
-export async function listAcceptReady(config: FlowdConfig): Promise<number[]> {
-  const tracker = await makeTrackerAdapter(config);
-  const trackingIds = await tracker.listByRole("tracking");
+export async function listAcceptReady(
+  config: FlowdConfig,
+  tracker?: ListingTracker,
+): Promise<number[]> {
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const trackingIds = await t.listByRole("tracking");
   const ready: number[] = [];
   for (const id of trackingIds) {
-    const slices = await tracker.listSlices(id);
+    const slices = await t.listSlices(id);
     const nonAcceptance = slices.filter((s) => s.role !== "needs-acceptance");
     if (nonAcceptance.every((s) => s.closed)) ready.push(id);
   }

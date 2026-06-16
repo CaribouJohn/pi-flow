@@ -301,6 +301,11 @@ export async function runDaemon(
       if (!cycleAborted && deps.listNeedsSlicingFn !== undefined) {
         try {
           slicingItems = await deps.listNeedsSlicingFn(config);
+          // Listing succeeded — reset backoff so a subsequent per-item
+          // transient error starts a fresh backoff sequence rather than
+          // compounding with a stale value from a previous cycle.
+          consecutiveErrors = 0;
+          backoffMs = 0;
         } catch (err) {
           consecutiveErrors++;
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -405,6 +410,10 @@ export async function runDaemon(
       if (!cycleAborted && deps.listNeedsPlanReviewFn !== undefined) {
         try {
           planReviewItems = await deps.listNeedsPlanReviewFn(config);
+          // Listing succeeded — reset backoff (same recovery-point logic as
+          // Phase A and the Phase C listTrackingParentsFn reset).
+          consecutiveErrors = 0;
+          backoffMs = 0;
         } catch (err) {
           consecutiveErrors++;
           const errMsg = err instanceof Error ? err.message : String(err);
@@ -618,6 +627,10 @@ export async function runDaemon(
       if (!cycleAborted && deps.listAcceptReadyFn !== undefined) {
         try {
           acceptReadyIds = await deps.listAcceptReadyFn(config);
+          // Listing succeeded — reset backoff (same recovery-point logic as
+          // Phases A, B, and C).
+          consecutiveErrors = 0;
+          backoffMs = 0;
         } catch (err) {
           consecutiveErrors++;
           const errMsg = err instanceof Error ? err.message : String(err);
