@@ -2,6 +2,7 @@
 import { readCostRecordsFromGit, runCalibrate, runCalibrateFromRecords } from "./calibrate.ts";
 import { planInvocation } from "./cli.ts";
 import { loadConfig } from "./config.ts";
+import { runDaemon, writeHeartbeatToPath } from "./daemon.ts";
 import { acceptTrack } from "./flow-accept.ts";
 import { runPlan } from "./flow-plan.ts";
 import { rejectTrack } from "./flow-reject.ts";
@@ -78,6 +79,16 @@ try {
     }
     if (result.costEstimate) console.log(`cost: ${result.costEstimate}`);
     process.exit(result.gate === "clear" ? 0 : 1);
+  }
+
+  if (plan.kind === "daemon") {
+    await runDaemon(config, plan.track, {
+      tickFn: runFlow,
+      writeHeartbeat: writeHeartbeatToPath,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.now(),
+    });
+    process.exit(0);
   }
 
   if (plan.kind === "status") {
