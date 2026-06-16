@@ -101,7 +101,13 @@ describe("cost-history path agreement: writer path === calibrate reader path", (
 
     // Commit to origin/track — use the REAL makeCommitHistoryToTrack so this
     // test validates the production code, not a duplicate local copy.
-    const commit = makeCommitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH, ACTOR);
+    const commit = makeCommitHistoryToTrack(
+      workdir,
+      TRACK_BRANCH,
+      HISTORY_PATH,
+      ACTOR,
+      "fake-token-for-local-tests",
+    );
     await commit();
 
     // Reader: calibrate reads via git show origin/<track>:<historyPath>.
@@ -119,7 +125,13 @@ describe("cost-history path agreement: writer path === calibrate reader path", (
 
     for (const sliceId of [10, 20, 30]) {
       await appendCostRecord(absPath, makeRecord(sliceId));
-      const commit = makeCommitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH, ACTOR);
+      const commit = makeCommitHistoryToTrack(
+        workdir,
+        TRACK_BRANCH,
+        HISTORY_PATH,
+        ACTOR,
+        "fake-token-for-local-tests",
+      );
       await commit();
     }
 
@@ -133,7 +145,13 @@ describe("cost-history path agreement: writer path === calibrate reader path", (
     const rec = makeRecord(99);
 
     await appendCostRecord(absPath, rec);
-    const commit = makeCommitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH, ACTOR);
+    const commit = makeCommitHistoryToTrack(
+      workdir,
+      TRACK_BRANCH,
+      HISTORY_PATH,
+      ACTOR,
+      "fake-token-for-local-tests",
+    );
     await commit();
 
     // Second call: appendCostRecord skips (idempotent), commit is a no-op.
@@ -160,7 +178,13 @@ describe("cost-history path agreement: writer path === calibrate reader path", (
     const absPath = join(workdir, HISTORY_PATH);
     await appendCostRecord(absPath, makeRecord(7));
 
-    const commit = makeCommitHistoryToTrack(workdir, TRACK_BRANCH, HISTORY_PATH, ACTOR);
+    const commit = makeCommitHistoryToTrack(
+      workdir,
+      TRACK_BRANCH,
+      HISTORY_PATH,
+      ACTOR,
+      "fake-token-for-local-tests",
+    );
     await commit();
 
     const records = await readCostRecordsFromGit(workdir, TRACK_BRANCH, HISTORY_PATH);

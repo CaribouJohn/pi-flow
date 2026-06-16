@@ -77,6 +77,7 @@ export function makeCommitHistoryToTrack(
   trackBranch: string,
   historyPath: string,
   actor: string,
+  forgeToken: string,
 ): () => Promise<void> {
   return async () => {
     const absHistoryPath = resolve(workdir, historyPath);
@@ -87,9 +88,21 @@ export function makeCommitHistoryToTrack(
     const content = await readFile(absHistoryPath, "utf8").catch(() => "");
     if (content.trim().length === 0) return; // nothing to commit
 
+    // Build an authenticated env so git's credential helper can use the
+    // forge PAT (GH_TOKEN) for fetch and push — same injection as makeForgeRunner.
+    const authedEnv = makeForgeRunner(forgeToken);
+
     // Step 2: Sync local workdir to the latest origin track branch.
-    await $`git -C ${workdir} fetch origin`.quiet();
-    await $`git -C ${workdir} checkout -f -B ${trackBranch} origin/${trackBranch}`.quiet();
+    await authedEnv("git", ["-C", workdir, "fetch", "origin"]);
+    await authedEnv("git", [
+      "-C",
+      workdir,
+      "checkout",
+      "-f",
+      "-B",
+      trackBranch,
+      `origin/${trackBranch}`,
+    ]);
 
     // Step 3: Write the updated history file and stage it.
     await mkdir(dirname(absHistoryPath), { recursive: true });
@@ -107,8 +120,9 @@ export function makeCommitHistoryToTrack(
     const msg = "chore: update cost-history.jsonl";
     await $`git -C ${workdir} -c user.name=${actor} -c user.email=${actor}@flowd commit -m ${msg}`.quiet();
 
-    // Step 4: Push so calibrate can read via `git show origin/<track>:<path>`.
-    await $`git -C ${workdir} push origin ${trackBranch}`.quiet();
+    // Step 4: Push via the forge-token-authenticated runner so the headless
+    // flow-bot principal can write to origin without interactive credentials.
+    await authedEnv("git", ["-C", workdir, "push", "origin", trackBranch]);
   };
 }
 
@@ -171,6 +185,7 @@ export function buildPorts(
             config.trackBranch,
             config.costMeter.historyPath,
             config.actor,
+            forgeToken,
           ),
         })
       : undefined;
