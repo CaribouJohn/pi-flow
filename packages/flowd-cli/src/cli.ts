@@ -18,6 +18,7 @@ const USAGE = [
   "       flowd accept --track <n> [--config <path>]",
   "       flowd calibrate [--config <path>]",
   "       flowd status [--config <path>]",
+  "       flowd daemon --track <n> [--config <path>]",
 ].join("\n");
 
 /**
@@ -57,7 +58,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { command, track, issue, prd, reason, config };
 }
 
-/** What the CLI should do: report a usage error, run a track, run a plan, reject, accept, calibrate, or status. */
+/** What the CLI should do: report a usage error, run a track, run a plan, reject, accept, calibrate, status, or daemon. */
 export type RunPlan =
   | { kind: "usage"; code: number; message: string }
   | { kind: "run"; track: number; config: string | undefined }
@@ -65,7 +66,8 @@ export type RunPlan =
   | { kind: "reject"; track: number; reason: string; config: string | undefined }
   | { kind: "accept"; track: number; config: string | undefined }
   | { kind: "calibrate"; config: string | undefined }
-  | { kind: "status"; config: string | undefined };
+  | { kind: "status"; config: string | undefined }
+  | { kind: "daemon"; track: number; config: string | undefined };
 
 /** Validate the invocation and decide what to do (pure; the entry runs it). */
 export function planInvocation(argv: string[]): RunPlan {
@@ -117,6 +119,17 @@ export function planInvocation(argv: string[]): RunPlan {
 
   if (command === "status") {
     return { kind: "status", config };
+  }
+
+  if (command === "daemon") {
+    if (track === undefined || !Number.isInteger(track) || track < 1) {
+      return {
+        kind: "usage",
+        code: 2,
+        message: `error: --track <n> must be a positive integer\n${USAGE}`,
+      };
+    }
+    return { kind: "daemon", track, config };
   }
 
   if (command === "plan") {
