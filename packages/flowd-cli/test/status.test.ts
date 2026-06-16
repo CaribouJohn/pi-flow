@@ -195,6 +195,19 @@ describe("formatStatus — daemon line", () => {
     expect(out).toContain("daemon: stale");
     expect(out).toContain("may be stuck");
   });
+
+  test("dead liveness with non-null heartbeat → shows dead with last-tick age (crashed)", () => {
+    const hb = makeHeartbeat({
+      pid: 9999,
+      lastTickAt: new Date(now - 15 * CADENCE).toISOString(),
+    });
+    const out = formatStatus({ worlds: [], heartbeat: hb, liveness: "dead", now });
+    expect(out).toContain("daemon: dead");
+    expect(out).toContain("ago");
+    expect(out).toContain("process may have crashed");
+    // Must NOT report absent — the file exists, daemon did run
+    expect(out).not.toContain("absent");
+  });
 });
 
 describe("formatStatus — empty world", () => {

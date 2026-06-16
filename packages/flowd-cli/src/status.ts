@@ -146,6 +146,9 @@ export function formatStatus(input: FormatStatusInput): string {
   } else if (liveness === "stale" && heartbeat !== null) {
     const age = formatAge(now - new Date(heartbeat.lastTickAt).getTime());
     lines.push(`daemon: stale  last-tick=${age} ago  (may be stuck or restarting)`);
+  } else if (liveness === "dead" && heartbeat !== null) {
+    const age = formatAge(now - new Date(heartbeat.lastTickAt).getTime());
+    lines.push(`daemon: dead  last-tick=${age} ago  (process may have crashed)`);
   } else {
     lines.push("daemon: absent");
   }
