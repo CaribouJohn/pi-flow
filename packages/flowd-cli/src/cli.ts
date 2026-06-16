@@ -16,6 +16,7 @@ const USAGE = [
   "       flowd plan --issue <n> --prd <path> [--config <path>]",
   "       flowd reject --track <n> --reason <text> [--config <path>]",
   "       flowd accept --track <n> [--config <path>]",
+  "       flowd calibrate [--config <path>]",
 ].join("\n");
 
 /**
@@ -55,13 +56,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
   return { command, track, issue, prd, reason, config };
 }
 
-/** What the CLI should do: report a usage error, run a track, run a plan, reject, or accept. */
+/** What the CLI should do: report a usage error, run a track, run a plan, reject, accept, or calibrate. */
 export type RunPlan =
   | { kind: "usage"; code: number; message: string }
   | { kind: "run"; track: number; config: string | undefined }
   | { kind: "plan"; issue: number; prd: string; config: string | undefined }
   | { kind: "reject"; track: number; reason: string; config: string | undefined }
-  | { kind: "accept"; track: number; config: string | undefined };
+  | { kind: "accept"; track: number; config: string | undefined }
+  | { kind: "calibrate"; config: string | undefined };
 
 /** Validate the invocation and decide what to do (pure; the entry runs it). */
 export function planInvocation(argv: string[]): RunPlan {
@@ -105,6 +107,10 @@ export function planInvocation(argv: string[]): RunPlan {
       };
     }
     return { kind: "accept", track, config };
+  }
+
+  if (command === "calibrate") {
+    return { kind: "calibrate", config };
   }
 
   if (command === "plan") {
