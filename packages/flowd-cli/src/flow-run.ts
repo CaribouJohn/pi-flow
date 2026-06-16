@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, relative, resolve, sep } from "node:path";
 import {
   type AgentPort,
   type Effort,
@@ -37,6 +38,60 @@ export function makeVerifyGate(
   shell: ShellRunner = realShell,
 ): VerifyGatePort {
   return { run: async () => ({ green: (await shell(command, workdir)) === 0 }) };
+}
+
+/**
+ * Build a callback that commits the cost-history file to the track branch.
+ *
+ * Sequence:
+ *  1. Read the current file content (which includes the just-appended record).
+ *  2. Reset the local workdir to `origin/<trackBranch>` (picks up the merged
+ *     slice code without disturbing the history file we already read).
+ *  3. Write the saved content back, stage it, and commit if changed.
+ *  4. Push to origin so `flowd calibrate` can read it via `git show`.
+ *
+ * The returned function is injected into `CostMeterAdapter` and called after
+ * every successful `appendCostRecord`.  Errors are propagated to the adapter
+ * which swallows them (never halts the build).
+ */
+export function makeCommitHistoryToTrack(
+  workdir: string,
+  trackBranch: string,
+  historyPath: string,
+  actor: string,
+): () => Promise<void> {
+  return async () => {
+    const absHistoryPath = resolve(workdir, historyPath);
+    // git paths must use forward slashes even on Windows.
+    const relHistoryPath = relative(workdir, absHistoryPath).replace(/\\/g, "/");
+
+    // Step 1: Read content before the checkout resets it.
+    const content = await readFile(absHistoryPath, "utf8").catch(() => "");
+    if (content.trim().length === 0) return; // nothing to commit
+
+    // Step 2: Sync local workdir to the latest origin track branch.
+    await $`git -C ${workdir} fetch origin`.quiet();
+    await $`git -C ${workdir} checkout -f -B ${trackBranch} origin/${trackBranch}`.quiet();
+
+    // Step 3: Write the updated history file and stage it.
+    await mkdir(dirname(absHistoryPath), { recursive: true });
+    await writeFile(absHistoryPath, content, "utf8");
+    // Use -f (force) so the file is staged even when .flowd/ is listed in
+    // .gitignore, which is the typical project layout.  Without -f, git silently
+    // skips gitignored files and diff --cached returns 0 (nothing staged), so
+    // the history file never reaches the track branch.
+    await $`git -C ${workdir} add -f ${relHistoryPath}`.quiet();
+
+    // Only commit when the file actually changed (idempotent guard).
+    const diff = await $`git -C ${workdir} diff --cached --quiet`.nothrow().quiet();
+    if (diff.exitCode === 0) return; // nothing staged
+
+    const msg = "chore: update cost-history.jsonl";
+    await $`git -C ${workdir} -c user.name=${actor} -c user.email=${actor}@flowd commit -m ${msg}`.quiet();
+
+    // Step 4: Push so calibrate can read via `git show origin/<track>:<path>`.
+    await $`git -C ${workdir} push origin ${trackBranch}`.quiet();
+  };
 }
 
 /** Compose the real adapters into the engine's ports. */
@@ -93,6 +148,12 @@ export function buildPorts(
           implementModelId: config.models.implement.id,
           reviewModelId: config.models.review.id,
           aiDisclaimer: config.aiDisclaimer,
+          commitHistoryToTrack: makeCommitHistoryToTrack(
+            config.workdir,
+            config.trackBranch,
+            config.costMeter.historyPath,
+            config.actor,
+          ),
         })
       : undefined;
   return { tracker, forge, agent, verify, costMeter };

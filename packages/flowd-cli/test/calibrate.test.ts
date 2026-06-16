@@ -8,7 +8,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildCalibrationRows, formatCalibrationReport, runCalibrate } from "../src/calibrate.ts";
+import {
+  buildCalibrationRows,
+  formatCalibrationReport,
+  runCalibrate,
+  runCalibrateFromRecords,
+} from "../src/calibrate.ts";
 import type { CostEstimatorConfig } from "../src/cost-estimator.ts";
 import type { CostHistoryRecord } from "../src/cost-meter.ts";
 
@@ -239,6 +244,64 @@ describe("runCalibrate", () => {
     const rec2 = record(2, "low", 1_200);
     await writeFile(historyPath, `${JSON.stringify(rec1)}\n${JSON.stringify(rec2)}\n`, "utf8");
     await expect(runCalibrate(historyPath, CONFIG)).resolves.toBeUndefined();
+  });
+});
+
+// ── runCalibrateFromRecords ─────────────────────────────────────────────────
+
+describe("runCalibrateFromRecords", () => {
+  test("empty records — logs 'no history data' notice", () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      runCalibrateFromRecords([]);
+    } finally {
+      console.log = orig;
+    }
+    const output = lines.join("\n");
+    expect(output).toContain("no history data");
+  });
+
+  test("valid records — logs the calibration table without throwing", () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      runCalibrateFromRecords([record(1, "medium", 4_500)], CONFIG);
+    } finally {
+      console.log = orig;
+    }
+    const output = lines.join("\n");
+    expect(output).toContain("medium");
+    expect(output).toContain("implement");
+  });
+
+  test("records with undefined effort — logs 'unknown' rows without throwing", () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      runCalibrateFromRecords([record(1, undefined, 3_000)]);
+    } finally {
+      console.log = orig;
+    }
+    const output = lines.join("\n");
+    expect(output).toContain("unknown");
+  });
+
+  test("no config provided — still prints table with '—' for configured column", () => {
+    const lines: string[] = [];
+    const orig = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      runCalibrateFromRecords([record(1, "medium", 4_500)]);
+    } finally {
+      console.log = orig;
+    }
+    const output = lines.join("\n");
+    // No config → configuredTokens null → '—' placeholder.
+    expect(output).toContain("—");
   });
 });
 
