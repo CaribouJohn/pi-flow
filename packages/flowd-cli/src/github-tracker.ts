@@ -48,25 +48,30 @@ interface GhIssue {
 
 export interface GitHubTrackerOptions {
   repo: string;
-  /** The track branch (a git concept the tracker can't derive; supplied here). */
-  trackBranch: string;
+  /**
+   * @deprecated No longer used by `getTrack()`, which now derives the branch
+   * as `track/<trackId>` so each tracking parent has its own git branch.
+   * Kept optional for backwards-compatible call sites; ignored at runtime.
+   */
+  trackBranch?: string;
   run?: GhRunner;
 }
 
 export class GitHubTrackerAdapter implements TrackerPort {
   private readonly repo: string;
-  private readonly trackBranch: string;
   private readonly run: GhRunner;
 
   constructor(opts: GitHubTrackerOptions) {
     this.repo = opts.repo;
-    this.trackBranch = opts.trackBranch;
     this.run = opts.run ?? realGhRunner;
   }
 
   async getTrack(trackId: number): Promise<Track> {
     const role = await this.getParentRole(trackId);
-    return { id: trackId, branch: this.trackBranch, role };
+    // Derive the branch from the trackId so each tracking parent uses its
+    // own git branch (e.g. track/5, track/10) — prevents inter-track conflicts
+    // when the daemon drives multiple tracking parents in a single cycle.
+    return { id: trackId, branch: `track/${trackId}`, role };
   }
 
   /** Read the parent issue's role label. */

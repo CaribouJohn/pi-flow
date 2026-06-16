@@ -179,6 +179,13 @@ export async function runDaemon(
       } else if (deps.listTrackingParentsFn !== undefined) {
         try {
           trackIds = await deps.listTrackingParentsFn(config);
+          // The listing call succeeded — treat this as a recovery point.
+          // A previous cycle may have left consecutiveErrors / backoffMs set
+          // from a transient listing failure; reset them now so a subsequent
+          // per-track transient error starts its own fresh backoff sequence
+          // rather than compounding with the already-recovered list error.
+          consecutiveErrors = 0;
+          backoffMs = 0;
         } catch (err) {
           consecutiveErrors++;
           const errMsg = err instanceof Error ? err.message : String(err);

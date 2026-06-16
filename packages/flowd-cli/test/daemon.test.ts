@@ -1300,6 +1300,52 @@ describe("runDaemon — all-tracks mode (trackId = undefined)", () => {
     expect(sleeps[0]).toBe(50);
   });
 
+  test("listTrackingParentsFn success after error resets consecutiveErrors and backoffMs", async () => {
+    // Regression: a listTrackingParentsFn error in cycle N followed by a
+    // track error in cycle N+1 must NOT compound backoff — the list success
+    // in cycle N+1 acts as a recovery point and resets both counters.
+    const heartbeats: DaemonHeartbeat[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        backoffBaseMs: 50,
+        backoffMaxMs: 1_000,
+        listTrackingParentsFn: async () => {
+          cycle++;
+          if (cycle === 1) throw new Error("GitHub unavailable"); // transient list error
+          return [42]; // succeeds on cycle 2+
+        },
+        tickFn: async () => {
+          if (cycle === 2) throw new Error("network timeout"); // transient tick error on cycle 2
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          // Stop after cycle 2's sleep so we capture its backoff value.
+          if (cycle >= 2) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Cycle 1: list error → backoff = 50, consecutiveErrors = 1
+    expect(sleeps[0]).toBe(50);
+    expect(heartbeats[0]).toMatchObject({ status: "degraded", consecutiveErrors: 1 });
+
+    // Cycle 2: list succeeds (resets state) then tick errors → backoff must
+    // restart from base (50), NOT compound to 100.
+    expect(sleeps[1]).toBe(50); // base, not 100 (would be 100 without the reset fix)
+    expect(heartbeats[1]).toMatchObject({ status: "degraded", consecutiveErrors: 1 });
+  });
+
   test("listTrackingParentsFn error is treated as transient — daemon degrades + backs off", async () => {
     const heartbeats: DaemonHeartbeat[] = [];
     const sleeps: number[] = [];

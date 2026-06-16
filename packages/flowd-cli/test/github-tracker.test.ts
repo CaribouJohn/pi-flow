@@ -194,10 +194,18 @@ describe("GitHubTrackerAdapter", () => {
     });
   });
 
-  test("getTrack returns the configured track branch with the parent role", async () => {
+  test("getTrack derives the branch from trackId (track/<id>) and returns the parent role", async () => {
     const { run } = fakeRunner();
-    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
-    expect(await tracker.getTrack(1)).toEqual({ id: 1, branch: "track/x", role: "tracking" });
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", run });
+    expect(await tracker.getTrack(1)).toEqual({ id: 1, branch: "track/1", role: "tracking" });
+  });
+
+  test("getTrack uses trackId for branch — each tracking parent gets its own branch", async () => {
+    const { run } = fakeRunner();
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", run });
+    // Different trackIds → different branches (no inter-track conflict).
+    expect(await tracker.getTrack(5)).toMatchObject({ id: 5, branch: "track/5" });
+    expect(await tracker.getTrack(99)).toMatchObject({ id: 99, branch: "track/99" });
   });
 
   test("mutations call gh with the expected args", async () => {
