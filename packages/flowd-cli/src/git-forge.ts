@@ -1,4 +1,4 @@
-import type { ForgePort, PullRequest, Verdict } from "@pi-flow/flow-engine";
+import type { ForgePort, MainProtection, PullRequest, Verdict } from "@pi-flow/flow-engine";
 import { $ } from "bun";
 
 /**
@@ -252,6 +252,31 @@ export class GitForgeAdapter implements ForgePort {
     await this.gh(["pr", "merge", String(prNumber), "--repo", this.repo, "--squash"]);
   }
 
+  /**
+   * Read the default branch's merge-protection state (ADR-0038 precondition).
+   * Uses the GitHub REST API; returns unprotected defaults on 404 (no rule set)
+   * so the caller can surface a warning without hard-failing.
+   */
+  async getMainProtection(): Promise<MainProtection> {
+    try {
+      const out = await this.gh([
+        "api",
+        `repos/${this.repo}/branches/${this.defaultBranch}/protection`,
+      ]);
+      const data = JSON.parse(out) as {
+        required_pull_request_reviews?: { required_approving_review_count?: number };
+      };
+      const rpr = data.required_pull_request_reviews;
+      return {
+        requiresPr: rpr !== undefined,
+        requiresNonAuthorApproval: (rpr?.required_approving_review_count ?? 0) >= 1,
+      };
+    } catch {
+      // Branch is unprotected (personal repo, sandbox, or API unavailable).
+      return { requiresPr: false, requiresNonAuthorApproval: false };
+    }
+  }
+
   async deleteBranch(branch: string): Promise<void> {
     // Tolerant: the branch may already be gone (e.g. merge auto-deleted it).
     await this.run("git", ["push", "origin", "--delete", branch], { cwd: this.workdir }).catch(
@@ -280,6 +305,21 @@ export class GitForgeAdapter implements ForgePort {
 }
 
 // --- pure helpers (unit-tested directly) ---
+
+/**
+ * Verify ADR-0038 invariant #1 (layer 3): main must require a PR with at least
+ * one non-author approval so the flow-bot principal cannot merge unilaterally.
+ *
+ * Returns a warning string when the protection is absent or incomplete; null
+ * when the boundary is in place. Never throws.
+ */
+export function checkMainProtectionWarning(
+  protection: MainProtection,
+  actor: string,
+): string | null {
+  if (protection.requiresPr && protection.requiresNonAuthorApproval) return null;
+  return `\u26a0 main is not protected against ${actor} \u2014 invariant #1 on layer 3 only`;
+}
 
 interface GhPr {
   number: number;

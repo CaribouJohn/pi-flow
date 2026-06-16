@@ -77,6 +77,18 @@ export interface Track {
   role: Role;
 }
 
+/**
+ * Main-branch merge-protection state (ADR-0038 precondition).
+ * On personal repos the org-only "restrict push" field is absent; the
+ * relevant signal is require-a-PR + required non-author approval.
+ */
+export interface MainProtection {
+  /** Whether the branch requires a PR before any merge. */
+  requiresPr: boolean;
+  /** Whether at least one non-author approval is required (bot can't self-approve). */
+  requiresNonAuthorApproval: boolean;
+}
+
 /** Plan-review gate types (SPEC §5.3 T13/T14). */
 export type PlanReviewDecision = "CLEAR" | "ESCALATE";
 
