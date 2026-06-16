@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { RunResult } from "@pi-flow/flow-engine";
 import type { FlowdConfig } from "../src/config.ts";
-import { DEFAULT_BACKOFF_MAX_MS, type DaemonDeps, runDaemon } from "../src/daemon.ts";
+import {
+  DEFAULT_BACKOFF_MAX_MS,
+  type DaemonDeps,
+  SHELL_STDERR_MAX_LEN,
+  extractShellErrorMessage,
+  runDaemon,
+} from "../src/daemon.ts";
 import type { DaemonHeartbeat } from "../src/status.ts";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -1840,5 +1846,88 @@ describe("runDaemon — listing success paths reset backoff", () => {
     // Cycle 2: list succeeds (resets) → acceptFn errors → backoff restarts from base
     expect(sleeps[1]).toBe(50);
     expect(heartbeats[1]).toMatchObject({ status: "degraded", consecutiveErrors: 1 });
+  });
+});
+
+// ── extractShellErrorMessage ───────────────────────────────────────────────────
+
+describe("extractShellErrorMessage — ShellError stderr surfacing", () => {
+  test("plain Error returns only its message", () => {
+    expect(extractShellErrorMessage(new Error("plain error"))).toBe("plain error");
+  });
+
+  test("non-Error value returns its string representation", () => {
+    expect(extractShellErrorMessage("raw string")).toBe("raw string");
+  });
+
+  test("ShellError with stderr appends stderr to message", () => {
+    const err = Object.assign(new Error("Failed with exit code 128"), {
+      stderr: { toString: () => "fatal: 'abc123' is not a commit\n" },
+    });
+    const msg = extractShellErrorMessage(err);
+    expect(msg).toContain("Failed with exit code 128");
+    expect(msg).toContain("fatal: 'abc123' is not a commit");
+  });
+
+  test("ShellError with empty stderr falls back to stdout", () => {
+    const err = Object.assign(new Error("Failed with exit code 1"), {
+      stderr: { toString: () => "" },
+      stdout: { toString: () => "some git output" },
+    });
+    const msg = extractShellErrorMessage(err);
+    expect(msg).toContain("Failed with exit code 1");
+    expect(msg).toContain("some git output");
+  });
+
+  test("ShellError with both stderr and stdout prefers stderr", () => {
+    const err = Object.assign(new Error("Failed with exit code 128"), {
+      stderr: { toString: () => "git stderr content" },
+      stdout: { toString: () => "git stdout content" },
+    });
+    const msg = extractShellErrorMessage(err);
+    expect(msg).toContain("git stderr content");
+    expect(msg).not.toContain("git stdout content");
+  });
+
+  test("stderr longer than maxLen is truncated with ellipsis", () => {
+    const longStderr = "x".repeat(SHELL_STDERR_MAX_LEN + 100);
+    const err = Object.assign(new Error("exit 128"), {
+      stderr: { toString: () => longStderr },
+    });
+    const msg = extractShellErrorMessage(err);
+    // Should end with the ellipsis character after truncation
+    expect(msg).toContain("…");
+    // The stderr portion should not exceed maxLen + 1 (for the ellipsis)
+    const stderrPart = msg.split("\n").slice(1).join("\n");
+    expect(stderrPart.length).toBeLessThanOrEqual(SHELL_STDERR_MAX_LEN + 1);
+  });
+
+  test("daemon heartbeat activity includes ShellError stderr on tick failure", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const ac = new AbortController();
+
+    const shellErr = Object.assign(new Error("Failed with exit code 128"), {
+      stderr: { toString: () => "fatal: unknown revision or path not in the working tree" },
+    });
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        tickFn: async () => {
+          throw shellErr;
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+          ac.abort();
+        },
+        exitFn: () => {},
+      }),
+      ac.signal,
+    );
+
+    // The heartbeat activity should include the stderr diagnostic text
+    const activity = heartbeats[0]?.activity ?? "";
+    expect(activity).toContain("unknown revision or path not in the working tree");
   });
 });

@@ -55,6 +55,49 @@ describe("classifyError — fatal", () => {
   test("credential not found is fatal", () => {
     expect(classifyError(new Error("credential not found for host github.com"))).toBe("fatal");
   });
+
+  // ── git exit-128 ref / repository errors ───────────────────────────────────
+
+  test("'not a commit' in message is fatal", () => {
+    expect(classifyError(new Error("fatal: sha1 is not a commit"))).toBe("fatal");
+  });
+
+  test("'unknown revision' in message is fatal", () => {
+    expect(classifyError(new Error("fatal: unknown revision or path"))).toBe("fatal");
+  });
+
+  test("'bad ref' in message is fatal", () => {
+    expect(classifyError(new Error("error: bad ref for .git/refs/heads/track/5"))).toBe("fatal");
+  });
+
+  test("'not a git repository' in message is fatal", () => {
+    expect(classifyError(new Error("fatal: not a git repository (or any parent)"))).toBe("fatal");
+  });
+
+  test("'cannot be created' in message is fatal", () => {
+    expect(classifyError(new Error("error: refs/heads/track/5 cannot be created"))).toBe("fatal");
+  });
+
+  test("git ref error in ShellError stderr is fatal (exit 128 message only)", () => {
+    const shellErr = Object.assign(new Error("Failed with exit code 128"), {
+      stderr: { toString: () => "fatal: 'abc123' is not a commit\n" },
+    });
+    expect(classifyError(shellErr)).toBe("fatal");
+  });
+
+  test("'unknown revision' in ShellError stderr is fatal", () => {
+    const shellErr = Object.assign(new Error("Failed with exit code 128"), {
+      stderr: { toString: () => "error: unknown revision or path not in the working tree\n" },
+    });
+    expect(classifyError(shellErr)).toBe("fatal");
+  });
+
+  test("'not a git repository' in ShellError stderr is fatal", () => {
+    const shellErr = Object.assign(new Error("Process exited with code 128"), {
+      stderr: { toString: () => "fatal: not a git repository\n" },
+    });
+    expect(classifyError(shellErr)).toBe("fatal");
+  });
 });
 
 // ── Transient errors ──────────────────────────────────────────────────────────

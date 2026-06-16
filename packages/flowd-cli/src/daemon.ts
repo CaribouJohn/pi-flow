@@ -38,6 +38,30 @@ export const DEFAULT_BACKOFF_BASE_MS = 5_000;
 /** Default maximum backoff cap (ms) — 5 minutes. */
 export const DEFAULT_BACKOFF_MAX_MS = 300_000;
 
+/** Max bytes surfaced from ShellError stderr/stdout in log/heartbeat strings. */
+export const SHELL_STDERR_MAX_LEN = 500;
+
+/**
+ * Extract a diagnostic-rich error message from any error value.
+ *
+ * Bun's `$` ShellError carries `.stderr` and `.stdout` as Buffer-like objects.
+ * Without this helper, a failed `git` command surfaces only
+ * `"Failed with exit code 128"`, hiding the actual git diagnostic.
+ * This function appends a bounded slice of stderr (or stdout when stderr is
+ * empty) so daemon log lines and heartbeat `activity` fields carry the real
+ * error text.
+ */
+export function extractShellErrorMessage(err: unknown, maxLen = SHELL_STDERR_MAX_LEN): string {
+  const base = err instanceof Error ? err.message : String(err);
+  // Duck-type Bun's ShellError: avoid importing Bun-specific types into the
+  // daemon module so it stays testable in plain Node/Bun environments.
+  const shell = err as { stderr?: { toString(): string }; stdout?: { toString(): string } };
+  const extra = (shell.stderr?.toString().trim() ?? "") || shell.stdout?.toString().trim() || "";
+  if (!extra) return base;
+  const bounded = extra.length > maxLen ? `${extra.slice(0, maxLen)}…` : extra;
+  return `${base}\n${bounded}`;
+}
+
 /**
  * PRD-location convention (T12 auto-slice):
  *
@@ -248,7 +272,7 @@ export async function runDaemon(
           backoffMs = 0;
         } catch (err) {
           consecutiveErrors++;
-          const errMsg = err instanceof Error ? err.message : String(err);
+          const errMsg = extractShellErrorMessage(err);
           const kind = classifyError(err);
 
           if (kind === "fatal") {
@@ -308,7 +332,7 @@ export async function runDaemon(
           backoffMs = 0;
         } catch (err) {
           consecutiveErrors++;
-          const errMsg = err instanceof Error ? err.message : String(err);
+          const errMsg = extractShellErrorMessage(err);
           const kind = classifyError(err);
           if (kind === "fatal") {
             const activity = `halted: ${errMsg}`;
@@ -359,7 +383,7 @@ export async function runDaemon(
             log({ ts: new Date(tickStart).toISOString(), track: item.id, action: "slice" });
           } catch (err) {
             consecutiveErrors++;
-            const errMsg = err instanceof Error ? err.message : String(err);
+            const errMsg = extractShellErrorMessage(err);
             const kind = classifyError(err);
             if (kind === "fatal") {
               const activity = `halted: ${errMsg}`;
@@ -416,7 +440,7 @@ export async function runDaemon(
           backoffMs = 0;
         } catch (err) {
           consecutiveErrors++;
-          const errMsg = err instanceof Error ? err.message : String(err);
+          const errMsg = extractShellErrorMessage(err);
           const kind = classifyError(err);
           if (kind === "fatal") {
             const activity = `halted: ${errMsg}`;
@@ -467,7 +491,7 @@ export async function runDaemon(
             log({ ts: new Date(tickStart).toISOString(), track: item.id, action: "plan-gate" });
           } catch (err) {
             consecutiveErrors++;
-            const errMsg = err instanceof Error ? err.message : String(err);
+            const errMsg = extractShellErrorMessage(err);
             const kind = classifyError(err);
             if (kind === "fatal") {
               const activity = `halted: ${errMsg}`;
@@ -573,7 +597,7 @@ export async function runDaemon(
           }
         } catch (err) {
           consecutiveErrors++;
-          const errMsg = err instanceof Error ? err.message : String(err);
+          const errMsg = extractShellErrorMessage(err);
           const kind = classifyError(err);
 
           if (kind === "fatal") {
@@ -633,7 +657,7 @@ export async function runDaemon(
           backoffMs = 0;
         } catch (err) {
           consecutiveErrors++;
-          const errMsg = err instanceof Error ? err.message : String(err);
+          const errMsg = extractShellErrorMessage(err);
           const kind = classifyError(err);
           if (kind === "fatal") {
             const activity = `halted: ${errMsg}`;
@@ -684,7 +708,7 @@ export async function runDaemon(
             log({ ts: new Date(tickStart).toISOString(), track: tid, action: "accept" });
           } catch (err) {
             consecutiveErrors++;
-            const errMsg = err instanceof Error ? err.message : String(err);
+            const errMsg = extractShellErrorMessage(err);
             const kind = classifyError(err);
             if (kind === "fatal") {
               const activity = `halted: ${errMsg}`;
