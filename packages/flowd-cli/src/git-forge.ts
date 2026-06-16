@@ -254,10 +254,13 @@ export class GitForgeAdapter implements ForgePort {
 
   /**
    * Read the default branch's merge-protection state (ADR-0038 precondition).
-   * Uses the GitHub REST API; returns unprotected defaults on 404 (no rule set)
-   * so the caller can surface a warning without hard-failing.
+   * Checks classic branch-protection first; on 404 falls back to the rulesets
+   * effective-rules surface (`/repos/{repo}/rules/branches/{branch}`) so that
+   * repos protected only via rulesets (no classic rule) are not falsely reported
+   * as unprotected.  Returns unprotected defaults only when both surfaces miss.
    */
   async getMainProtection(): Promise<MainProtection> {
+    // --- 1. Classic branch-protection API ---
     try {
       const out = await this.gh([
         "api",
@@ -272,9 +275,32 @@ export class GitForgeAdapter implements ForgePort {
         requiresNonAuthorApproval: (rpr?.required_approving_review_count ?? 0) >= 1,
       };
     } catch {
-      // Branch is unprotected (personal repo, sandbox, or API unavailable).
-      return { requiresPr: false, requiresNonAuthorApproval: false };
+      // Classic protection absent — fall through to rulesets surface.
     }
+
+    // --- 2. Rulesets effective-rules API ---
+    // GET /repos/{repo}/rules/branches/{branch} returns an array of rule objects
+    // that are currently active for that branch, regardless of ruleset type.
+    try {
+      const out = await this.gh(["api", `repos/${this.repo}/rules/branches/${this.defaultBranch}`]);
+      const rules = JSON.parse(out) as Array<{
+        type: string;
+        parameters?: { required_approving_review_count?: number };
+      }>;
+      const prRule = rules.find((r) => r.type === "pull_request");
+      if (prRule !== undefined) {
+        const reviewCount = prRule.parameters?.required_approving_review_count ?? 0;
+        return {
+          requiresPr: true,
+          requiresNonAuthorApproval: reviewCount >= 1,
+        };
+      }
+    } catch {
+      // Rulesets surface also unavailable — fall through to unprotected default.
+    }
+
+    // Branch is unprotected (personal repo, sandbox, or API unavailable).
+    return { requiresPr: false, requiresNonAuthorApproval: false };
   }
 
   async deleteBranch(branch: string): Promise<void> {

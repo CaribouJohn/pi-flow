@@ -21,6 +21,8 @@ function makeFake(opts?: {
   localBranch?: string;
   /** Response for `gh api repos/.../branches/.../protection`. Throws when set to "throw". */
   apiProtection?: string | "throw";
+  /** Response for `gh api repos/.../rules/branches/...`. Throws when set to "throw" (default). */
+  apiRules?: string | "throw";
 }) {
   const calls: { cmd: string; args: string[]; cwd?: string }[] = [];
   const run: CmdRunner = async (cmd, args, o) => {
@@ -39,6 +41,14 @@ function makeFake(opts?: {
       return opts?.prList ?? "[]";
     }
     if (cmd === "gh" && args[0] === "api") {
+      const path = args[1] ?? "";
+      if (path.includes("/rules/branches/")) {
+        // Rulesets effective-rules endpoint
+        const val = opts?.apiRules ?? "throw";
+        if (val === "throw") throw new Error("HTTP 404: Not Found");
+        return val;
+      }
+      // Classic branch-protection endpoint
       const val = opts?.apiProtection;
       if (val === "throw") throw new Error("HTTP 404: Branch not protected");
       return (
@@ -314,6 +324,63 @@ describe("GitForgeAdapter — getMainProtection", () => {
     await new GitForgeAdapter(OPTS(run)).getMainProtection();
     const api = calls.find((c) => c.cmd === "gh" && c.args[0] === "api");
     expect(api?.args[1]).toBe("repos/o/r/branches/main/protection");
+  });
+
+  // --- Ruleset-surface fallback (the bug caught at acceptance) ---
+
+  test("ruleset-only: returns protected when classic API is 404 but an active pull_request ruleset rule exists with ≥1 approver", async () => {
+    // Reproduces the CaribouJohn/pi-flow failure: classic protection → 404,
+    // rulesets surface → pull_request rule with required_approving_review_count=1.
+    const rulesJson = JSON.stringify([
+      { type: "pull_request", parameters: { required_approving_review_count: 1 } },
+    ]);
+    const { run } = makeFake({ apiProtection: "throw", apiRules: rulesJson });
+    const prot = await new GitForgeAdapter(OPTS(run)).getMainProtection();
+    expect(prot).toEqual({ requiresPr: true, requiresNonAuthorApproval: true });
+  });
+
+  test("ruleset-only with 0 approvers: requiresNonAuthorApproval is false", async () => {
+    const rulesJson = JSON.stringify([
+      { type: "pull_request", parameters: { required_approving_review_count: 0 } },
+    ]);
+    const { run } = makeFake({ apiProtection: "throw", apiRules: rulesJson });
+    const prot = await new GitForgeAdapter(OPTS(run)).getMainProtection();
+    expect(prot).toEqual({ requiresPr: true, requiresNonAuthorApproval: false });
+  });
+
+  test("ruleset-only with no pull_request rule: returns unprotected", async () => {
+    // Ruleset exists but contains only non-PR rules (e.g. status-check only).
+    const rulesJson = JSON.stringify([{ type: "required_status_checks" }]);
+    const { run } = makeFake({ apiProtection: "throw", apiRules: rulesJson });
+    const prot = await new GitForgeAdapter(OPTS(run)).getMainProtection();
+    expect(prot).toEqual({ requiresPr: false, requiresNonAuthorApproval: false });
+  });
+
+  test("neither classic nor ruleset: returns unprotected defaults without throwing", async () => {
+    // Both surfaces 404 — personal repo or no protection at all.
+    const { run } = makeFake({ apiProtection: "throw", apiRules: "throw" });
+    const prot = await new GitForgeAdapter(OPTS(run)).getMainProtection();
+    expect(prot).toEqual({ requiresPr: false, requiresNonAuthorApproval: false });
+  });
+
+  test("classic-protected repo: ruleset surface is never called", async () => {
+    // When classic API succeeds the rulesets endpoint must not be queried.
+    const { run, calls } = makeFake(); // default apiProtection: PR required, 1 approver
+    const prot = await new GitForgeAdapter(OPTS(run)).getMainProtection();
+    expect(prot).toEqual({ requiresPr: true, requiresNonAuthorApproval: true });
+    const apiCalls = calls.filter((c) => c.cmd === "gh" && c.args[0] === "api");
+    expect(apiCalls.every((c) => !c.args[1]?.includes("/rules/branches/"))).toBe(true);
+  });
+
+  test("ruleset-only: checkMainProtectionWarning returns null (no false positive warning)", async () => {
+    // End-to-end regression: ruleset-protected main must produce NO warning.
+    const rulesJson = JSON.stringify([
+      { type: "pull_request", parameters: { required_approving_review_count: 1 } },
+    ]);
+    const { run } = makeFake({ apiProtection: "throw", apiRules: rulesJson });
+    const prot = await new GitForgeAdapter(OPTS(run)).getMainProtection();
+    const warning = checkMainProtectionWarning(prot, "flow-bot");
+    expect(warning).toBeNull();
   });
 });
 
