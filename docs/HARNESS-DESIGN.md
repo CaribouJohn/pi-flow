@@ -74,6 +74,11 @@ an engine choice:
   dashboard as a separate client over the same RPC seam — zero engine rewrite. Take this
   if tray/background lifecycle proves flaky for true overnight runs.
 
+> **v1 took the escape hatch first.** PRD-0005 ships the **headless `flowd daemon`** before
+> any tray binding (engine-before-pixels; PRD-0002's shell is unbuilt; minimize the surface
+> between operator and "is it running?"). Binding the daemon into the tray is then a pure
+> addition. See [`prd/0005-continuous-daemon.md`](./prd/0005-continuous-daemon.md).
+
 The **`flowd` ↔ dashboard seam reuses Hiss's Mainview↔Bun RPC pattern** (a typed wrapper
 client on the webview side, handlers on the Bun side — the "new RPC method" recipe from
 `CLAUDE.md`).
