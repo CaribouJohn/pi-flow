@@ -544,3 +544,163 @@ describe("runDaemon — idempotent resume", () => {
     expect(calls2).toEqual([5]);
   });
 });
+
+// ── NEEDS YOU log-on-entry ────────────────────────────────────────────────────
+
+describe("runDaemon — NEEDS YOU log-on-entry", () => {
+  test("logs needsYou once when an item first enters the set", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        needsYouFn: async () => [{ id: 42, title: "Review it", reason: "ready-for-human" }],
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+        log: (line) => {
+          logs.push(line);
+        },
+      }),
+      ac.signal,
+    );
+
+    const needsYouLogs = logs.filter((l) => l.needsYou !== undefined);
+    expect(needsYouLogs).toHaveLength(1);
+    expect(needsYouLogs[0]).toMatchObject({
+      track: 5,
+      needsYou: 42,
+      reason: "ready-for-human",
+    });
+    // biome-ignore lint/style/noNonNullAssertion: array index is safe in test
+    expect(String(needsYouLogs[0]!.message)).toContain("🔔 NEEDS YOU #42");
+  });
+
+  test("does NOT re-log the same item on the next tick", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        needsYouFn: async () => [{ id: 42, title: "Review it", reason: "ready-for-human" }],
+        tickFn: async () => {
+          tick++;
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          // Let two ticks complete before stopping
+          if (tick >= 2) ac.abort();
+        },
+        log: (line) => {
+          logs.push(line);
+        },
+      }),
+      ac.signal,
+    );
+
+    // Two ticks ran but the needs-you item must only appear once
+    expect(tick).toBeGreaterThanOrEqual(2);
+    const needsYouLogs = logs.filter((l) => l.needsYou !== undefined);
+    expect(needsYouLogs).toHaveLength(1);
+  });
+
+  test("logs each distinct item exactly once across multiple ticks", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    // First tick: two items; second tick: same two items; third tick: a new third item
+    const responses = [
+      [
+        { id: 10, title: "A", reason: "needs-triage" },
+        { id: 11, title: "B", reason: "needs-grilling" },
+      ],
+      [
+        { id: 10, title: "A", reason: "needs-triage" },
+        { id: 11, title: "B", reason: "needs-grilling" },
+      ],
+      [
+        { id: 10, title: "A", reason: "needs-triage" },
+        { id: 11, title: "B", reason: "needs-grilling" },
+        { id: 12, title: "C", reason: "needs-acceptance" },
+      ],
+    ];
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        needsYouFn: async () => responses[Math.min(tick - 1, responses.length - 1)] ?? [],
+        tickFn: async () => {
+          tick++;
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          if (tick >= 3) ac.abort();
+        },
+        log: (line) => {
+          logs.push(line);
+        },
+      }),
+      ac.signal,
+    );
+
+    const needsYouLogs = logs.filter((l) => l.needsYou !== undefined);
+    // Items 10 and 11 logged on tick 1; item 12 logged on tick 3; no repeats
+    expect(needsYouLogs).toHaveLength(3);
+    expect(needsYouLogs.map((l) => l.needsYou)).toEqual([10, 11, 12]);
+  });
+
+  test("needsYouFn throwing does not halt the daemon", async () => {
+    const ac = new AbortController();
+    let tickCount = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        needsYouFn: async () => {
+          throw new Error("classifier failure");
+        },
+        tickFn: async () => {
+          tickCount++;
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          if (tickCount >= 2) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Loop continued despite the classification error
+    expect(tickCount).toBeGreaterThanOrEqual(2);
+  });
+
+  test("absent needsYouFn is a no-op (no needs-you log lines)", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+        log: (line) => {
+          logs.push(line);
+        },
+        // needsYouFn intentionally absent
+      }),
+      ac.signal,
+    );
+
+    expect(logs.filter((l) => l.needsYou !== undefined)).toHaveLength(0);
+  });
+});

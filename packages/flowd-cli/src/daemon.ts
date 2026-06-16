@@ -14,7 +14,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { RunResult } from "@pi-flow/flow-engine";
 import type { FlowdConfig } from "./config.ts";
-import { DEFAULT_POLL_CADENCE_MS, type DaemonHeartbeat, HEARTBEAT_PATH } from "./status.ts";
+import {
+  DEFAULT_POLL_CADENCE_MS,
+  type DaemonHeartbeat,
+  HEARTBEAT_PATH,
+  type NeedsYouItem,
+} from "./status.ts";
 
 /** Injectable dependencies for the daemon loop — enables unit testing. */
 export interface DaemonDeps {
@@ -38,6 +43,13 @@ export interface DaemonDeps {
    * Default: `JSON.stringify` → stdout.
    */
   log?: (line: Record<string, unknown>) => void;
+  /**
+   * Return the current NEEDS YOU items for the track world.
+   * Called after each successful tick so the daemon can surface new
+   * human-bookend items exactly once (de-duped via a per-run seen-set).
+   * Absent or throwing → treated as an empty list (non-fatal).
+   */
+  needsYouFn?: (config: FlowdConfig, trackId: number) => Promise<NeedsYouItem[]>;
 }
 
 /**
@@ -77,6 +89,8 @@ export async function runDaemon(
 
   let stopping = false;
   let consecutiveErrors = 0;
+  /** Ids of items already logged as NEEDS YOU this daemon run. */
+  const seenNeedsYou = new Set<number>();
 
   const stop = (): void => {
     stopping = true;
@@ -125,6 +139,28 @@ export async function runDaemon(
           steps: stepCount,
           activity,
         });
+
+        // Classify NEEDS YOU items and log once per new entry.
+        if (deps.needsYouFn !== undefined) {
+          let needsYouItems: NeedsYouItem[] = [];
+          try {
+            needsYouItems = await deps.needsYouFn(config, trackId);
+          } catch {
+            // Non-fatal: classification failure never stops the daemon.
+          }
+          for (const item of needsYouItems) {
+            if (!seenNeedsYou.has(item.id)) {
+              seenNeedsYou.add(item.id);
+              log({
+                ts: new Date(now()).toISOString(),
+                track: trackId,
+                needsYou: item.id,
+                reason: item.reason,
+                message: `🔔 NEEDS YOU #${item.id} — ${item.reason}`,
+              });
+            }
+          }
+        }
       } catch (err) {
         consecutiveErrors++;
         activity = `error: ${err instanceof Error ? err.message : String(err)}`;
