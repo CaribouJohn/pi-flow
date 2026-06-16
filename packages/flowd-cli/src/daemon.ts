@@ -232,8 +232,20 @@ export async function runDaemon(
   /** Ids of items already logged as NEEDS YOU this daemon run. */
   const seenNeedsYou = new Set<number>();
 
+  /**
+   * Promise that resolves immediately when the daemon is asked to stop.
+   * Races against `sleep(sleepDuration)` so an idle sleep is interrupted
+   * promptly (well under `pollCadenceMs`) rather than waiting for the full
+   * duration to elapse before checking `stopping`.
+   */
+  let resolveStop!: () => void;
+  const stopPromise = new Promise<void>((resolve) => {
+    resolveStop = resolve;
+  });
+
   const stop = (): void => {
     stopping = true;
+    resolveStop();
   };
 
   process.on("SIGINT", stop);
@@ -766,7 +778,7 @@ export async function runDaemon(
       // tick (or inside writeHeartbeat) exits without an extra sleep.
       if (stopping) break;
 
-      await sleep(sleepDuration);
+      await Promise.race([sleep(sleepDuration), stopPromise]);
     }
   } finally {
     process.off("SIGINT", stop);

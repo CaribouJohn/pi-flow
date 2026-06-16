@@ -1849,6 +1849,135 @@ describe("runDaemon — listing success paths reset backoff", () => {
   });
 });
 
+// ── abortable idle sleep (PRD-0005 hardening) ───────────────────────────────
+
+describe("runDaemon — abortable idle sleep", () => {
+  test("abort during idle sleep resolves the daemon without waiting for the full sleep", async () => {
+    // The sleep dep returns a never-resolving promise to simulate a long idle
+    // cadence (e.g. 30 s).  The abort signal must race and win so the daemon
+    // exits immediately rather than hanging until the sleep timer fires.
+    const ac = new AbortController();
+    let sleepCompleted = false;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        sleep: async (_ms) => {
+          // Simulate a long sleep that would normally block shutdown.
+          await new Promise<void>(() => {}); // never resolves on its own
+          sleepCompleted = true; // unreachable if the race works correctly
+        },
+        writeHeartbeat: async () => {
+          // Simulate SIGINT arriving while the daemon is mid-sleep.
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // The daemon must have exited without the sleep promise resolving.
+    expect(sleepCompleted).toBe(false);
+  });
+
+  test("abort during idle sleep still writes the final shutdown heartbeat", async () => {
+    const ac = new AbortController();
+    const heartbeats: DaemonHeartbeat[] = [];
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        sleep: async (_ms) => {
+          await new Promise<void>(() => {}); // never resolves
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+          // Abort on the first (in-loop) heartbeat — the finally block must
+          // still write the shutdown heartbeat afterwards.
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    const last = heartbeats.at(-1);
+    expect(last?.activity).toBe("shutdown");
+  });
+});
+
+// ── idle-pickup: daemon picks up external tracker change (PRD-0005 §6) ────────
+
+describe("runDaemon — idle-pickup of external tracker changes", () => {
+  test("idle daemon picks up a newly added tracking parent on the next poll cycle", async () => {
+    // Simulates: human adds a new `tracking` parent issue while the daemon is
+    // idle (listTrackingParentsFn returns [] on cycle 1, [42] on cycle 2).
+    // The daemon must call tickFn for track 42 within the next poll_cadence.
+    const driven: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listTrackingParentsFn: async () => {
+          cycle++;
+          // Cycle 1: daemon is idle — no tracking parents.
+          // Cycle 2: an external change added track #42.
+          return cycle === 1 ? [] : [42];
+        },
+        tickFn: async (_cfg, tid) => {
+          driven.push(tid);
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          // Let both cycles complete before stopping.
+          if (cycle >= 2) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Cycle 1 had no tracks; cycle 2 picked up the externally added track 42.
+    expect(cycle).toBeGreaterThanOrEqual(2);
+    expect(driven).toContain(42);
+  });
+
+  test("daemon removes a disappeared tracking parent on the next poll cycle", async () => {
+    // Simulates: human closes/removes a `tracking` label while the daemon is
+    // running — the tracker no longer appears in the listing.  The daemon must
+    // stop driving it after the next poll.
+    const driven: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listTrackingParentsFn: async () => {
+          cycle++;
+          // Cycle 1: track 99 is present.
+          // Cycle 2+: it has been removed externally.
+          return cycle === 1 ? [99] : [];
+        },
+        tickFn: async (_cfg, tid) => {
+          driven.push(tid);
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          if (cycle >= 2) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Track 99 was driven only in cycle 1; cycle 2 produced no drives.
+    expect(driven).toEqual([99]);
+  });
+});
+
 // ── extractShellErrorMessage ───────────────────────────────────────────────────
 
 describe("extractShellErrorMessage — ShellError stderr surfacing", () => {
