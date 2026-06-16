@@ -60,6 +60,7 @@ export function buildPorts(
     repo: config.repo,
     workdir: config.workdir,
     trackBranch: config.trackBranch,
+    verifyCommand: config.verifyCommand,
     model: config.models.implement,
     credentials,
   });

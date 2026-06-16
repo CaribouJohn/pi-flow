@@ -145,8 +145,12 @@ export class GitForgeAdapter implements ForgePort {
     if (exists) {
       await this.git(["checkout", branch]);
     } else {
-      await this.git(["checkout", fromBranch]);
-      await this.git(["checkout", "-b", branch]);
+      // Base the new slice off the *authoritative* origin track, not the local
+      // track branch — which may be stale if a sibling slice squash-merged into
+      // origin earlier in this same run (the local branch is only synced at S0,
+      // once per run). Branching off `origin/<track>` keeps sequential slices
+      // stacked on each other and avoids an avoidable merge-conflict park (#151).
+      await this.git(["checkout", "-b", branch, `origin/${fromBranch}`]);
     }
     return branch;
   }
