@@ -115,3 +115,35 @@ describe("buildPorts", () => {
     expect(typeof ports.verify.run).toBe("function");
   });
 });
+
+import { parsePrdPath } from "../src/flow-run.ts";
+
+describe("parsePrdPath", () => {
+  test("extracts path from PRD: line", () => {
+    expect(parsePrdPath("PRD: docs/prd/0005-foo.md\nsome other content")).toBe(
+      "docs/prd/0005-foo.md",
+    );
+  });
+
+  test("trims leading/trailing whitespace from value", () => {
+    expect(parsePrdPath("PRD:  docs/prd/0005-foo.md  ")).toBe("docs/prd/0005-foo.md");
+  });
+
+  test("returns null when no PRD: line exists", () => {
+    expect(parsePrdPath("This issue has no PRD marker.\n## Details\nsome text")).toBeNull();
+  });
+
+  test("returns null for empty body", () => {
+    expect(parsePrdPath("")).toBeNull();
+  });
+
+  test("is case-sensitive — lowercase prd: is not matched", () => {
+    expect(parsePrdPath("prd: docs/prd/0005-foo.md")).toBeNull();
+  });
+
+  test("matches first PRD: line when multiple exist", () => {
+    expect(parsePrdPath("PRD: docs/prd/first.md\nPRD: docs/prd/second.md")).toBe(
+      "docs/prd/first.md",
+    );
+  });
+});

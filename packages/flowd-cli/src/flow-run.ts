@@ -251,6 +251,98 @@ export function estimateFlowCost(
 }
 
 /**
+ * Extract the PRD path from an issue body.
+ *
+ * Looks for a line matching `PRD: <path>` (case-sensitive prefix, leading
+ * whitespace stripped from the value).  Returns `null` when no such line
+ * exists.
+ *
+ * Convention (daemon T12 auto-slice): a `needs-slicing` or
+ * `needs-plan-review` parent's issue body must contain:
+ *
+ *   PRD: docs/prd/NNNN-title.md
+ *
+ * The path is relative to the repository root.  The daemon reads it each
+ * cycle; updating the line in the issue body re-points the slicer.
+ */
+export function parsePrdPath(body: string): string | null {
+  for (const line of body.split(/\r?\n/)) {
+    const m = line.match(/^PRD:\s*(.+)$/);
+    if (m?.[1]) return m[1].trim();
+  }
+  return null;
+}
+
+/**
+ * Build a tracker adapter wired only with read credentials (no workdir needed).
+ * Shared by the listing helpers below.
+ */
+async function makeTrackerAdapter(config: FlowdConfig): Promise<GitHubTrackerAdapter> {
+  const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  const forgeToken = await readForgeToken(credentials);
+  return new GitHubTrackerAdapter({
+    repo: config.repo,
+    trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
+  });
+}
+
+/**
+ * Return `needs-slicing` parents that have a `PRD: <path>` body marker.
+ * Issues without the marker are silently excluded.
+ * Used by the daemon's Phase A each cycle (PRD-0005 §3).
+ */
+export async function listNeedsSlicingWithPrd(
+  config: FlowdConfig,
+): Promise<{ id: number; prdPath: string }[]> {
+  const tracker = await makeTrackerAdapter(config);
+  const ids = await tracker.listByRole("needs-slicing");
+  const result: { id: number; prdPath: string }[] = [];
+  for (const id of ids) {
+    const body = await tracker.getItemBody(id);
+    const prdPath = parsePrdPath(body);
+    if (prdPath !== null) result.push({ id, prdPath });
+  }
+  return result;
+}
+
+/**
+ * Return `needs-plan-review` parents that have a `PRD: <path>` body marker.
+ * Issues without the marker are silently excluded.
+ * Used by the daemon's Phase B each cycle (PRD-0005 §3).
+ */
+export async function listNeedsPlanReviewWithPrd(
+  config: FlowdConfig,
+): Promise<{ id: number; prdPath: string }[]> {
+  const tracker = await makeTrackerAdapter(config);
+  const ids = await tracker.listByRole("needs-plan-review");
+  const result: { id: number; prdPath: string }[] = [];
+  for (const id of ids) {
+    const body = await tracker.getItemBody(id);
+    const prdPath = parsePrdPath(body);
+    if (prdPath !== null) result.push({ id, prdPath });
+  }
+  return result;
+}
+
+/**
+ * Return the issue numbers of `tracking` parents whose every non-acceptance
+ * slice is closed (i.e. ready for the A1 accept-stage).
+ * Used by the daemon's Phase D each cycle (PRD-0005 §3).
+ */
+export async function listAcceptReady(config: FlowdConfig): Promise<number[]> {
+  const tracker = await makeTrackerAdapter(config);
+  const trackingIds = await tracker.listByRole("tracking");
+  const ready: number[] = [];
+  for (const id of trackingIds) {
+    const slices = await tracker.listSlices(id);
+    const nonAcceptance = slices.filter((s) => s.role !== "needs-acceptance");
+    if (nonAcceptance.every((s) => s.closed)) ready.push(id);
+  }
+  return ready;
+}
+
+/**
  * Return the issue numbers of all open `tracking` parents in the repo.
  * Used by the daemon's all-tracks mode (PRD-0005 §3) to derive the cycle's
  * work list each iteration.

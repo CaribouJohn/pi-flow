@@ -1399,3 +1399,322 @@ describe("runDaemon — all-tracks mode (trackId = undefined)", () => {
     expect(trackLogs.map((l) => l.track)).toEqual([11, 22]);
   });
 });
+
+// ── Phase A/B/D: needs-slicing, needs-plan-review, accept-ready ───────────────
+
+describe("runDaemon — extended pipeline (T12 / T13-T14 / A1)", () => {
+  test("needs-slicing parent with PRD → sliceFn invoked with id and prdPath", async () => {
+    const sliceCalls: [number, string][] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listNeedsSlicingFn: async () => [{ id: 5, prdPath: "docs/prd/0005-bar.md" }],
+        sliceFn: async (_cfg, trackId, prdPath) => {
+          sliceCalls.push([trackId, prdPath]);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(sliceCalls).toEqual([[5, "docs/prd/0005-bar.md"]]);
+  });
+
+  test("sliceFn not called when listNeedsSlicingFn returns empty list", async () => {
+    const sliceCalls: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listNeedsSlicingFn: async () => [],
+        sliceFn: async (_cfg, trackId) => {
+          sliceCalls.push(trackId);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(sliceCalls).toHaveLength(0);
+  });
+
+  test("sliceFn not called when listNeedsSlicingFn is absent", async () => {
+    const sliceCalls: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        // listNeedsSlicingFn intentionally absent
+        sliceFn: async (_cfg, trackId) => {
+          sliceCalls.push(trackId);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(sliceCalls).toHaveLength(0);
+  });
+
+  test("needs-plan-review parent → planFn invoked with id and prdPath", async () => {
+    const planCalls: [number, string][] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listNeedsPlanReviewFn: async () => [{ id: 7, prdPath: "docs/prd/0007-foo.md" }],
+        planFn: async (_cfg, trackId, prdPath) => {
+          planCalls.push([trackId, prdPath]);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(planCalls).toEqual([[7, "docs/prd/0007-foo.md"]]);
+  });
+
+  test("planFn not called when listNeedsPlanReviewFn returns empty list", async () => {
+    const planCalls: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listNeedsPlanReviewFn: async () => [],
+        planFn: async (_cfg, trackId) => {
+          planCalls.push(trackId);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(planCalls).toHaveLength(0);
+  });
+
+  test("completed track → acceptFn invoked", async () => {
+    const acceptCalls: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listAcceptReadyFn: async () => [5],
+        acceptFn: async (_cfg, trackId) => {
+          acceptCalls.push(trackId);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(acceptCalls).toEqual([5]);
+  });
+
+  test("incomplete track (listAcceptReadyFn returns empty) → acceptFn not invoked", async () => {
+    const acceptCalls: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listTrackingParentsFn: async () => [5],
+        listAcceptReadyFn: async () => [], // empty = no track is complete
+        acceptFn: async (_cfg, trackId) => {
+          acceptCalls.push(trackId);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(acceptCalls).toHaveLength(0);
+  });
+
+  test("acceptFn not called when listAcceptReadyFn is absent", async () => {
+    const acceptCalls: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        // listAcceptReadyFn intentionally absent
+        acceptFn: async (_cfg, trackId) => {
+          acceptCalls.push(trackId);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(acceptCalls).toHaveLength(0);
+  });
+
+  test("multiple needs-slicing parents → sliceFn called for each in order", async () => {
+    const sliceCalls: [number, string][] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listNeedsSlicingFn: async () => [
+          { id: 10, prdPath: "docs/prd/0010-a.md" },
+          { id: 11, prdPath: "docs/prd/0011-b.md" },
+        ],
+        sliceFn: async (_cfg, trackId, prdPath) => {
+          sliceCalls.push([trackId, prdPath]);
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(sliceCalls).toEqual([
+      [10, "docs/prd/0010-a.md"],
+      [11, "docs/prd/0011-b.md"],
+    ]);
+  });
+
+  test("phases A, B, C, D all run in one cycle when configured", async () => {
+    const events: string[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listNeedsSlicingFn: async () => [{ id: 1, prdPath: "docs/prd/0001.md" }],
+        sliceFn: async () => {
+          events.push("slice");
+        },
+        listNeedsPlanReviewFn: async () => [{ id: 2, prdPath: "docs/prd/0002.md" }],
+        planFn: async () => {
+          events.push("plan-gate");
+        },
+        listTrackingParentsFn: async () => [3],
+        tickFn: async () => {
+          events.push("tick");
+          return IDLE_RESULT;
+        },
+        listAcceptReadyFn: async () => [4],
+        acceptFn: async () => {
+          events.push("accept");
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // All four phases ran in order A → B → C → D within the same cycle.
+    expect(events).toEqual(["slice", "plan-gate", "tick", "accept"]);
+  });
+
+  test("transient sliceFn error → Phase B/C/D skipped, daemon backs off", async () => {
+    const planCalls: number[] = [];
+    const tickCalls: number[] = [];
+    const acceptCalls: number[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        backoffBaseMs: 50,
+        backoffMaxMs: 1_000,
+        listNeedsSlicingFn: async () => [{ id: 1, prdPath: "docs/prd/0001.md" }],
+        sliceFn: async () => {
+          throw new Error("network timeout");
+        },
+        listNeedsPlanReviewFn: async () => [{ id: 2, prdPath: "docs/prd/0002.md" }],
+        planFn: async (_cfg, id) => {
+          planCalls.push(id);
+        },
+        listTrackingParentsFn: async () => [3],
+        tickFn: async (_cfg, id) => {
+          tickCalls.push(id);
+          return IDLE_RESULT;
+        },
+        listAcceptReadyFn: async () => [4],
+        acceptFn: async (_cfg, id) => {
+          acceptCalls.push(id);
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Phase A failed → all subsequent phases were skipped.
+    expect(planCalls).toHaveLength(0);
+    expect(tickCalls).toHaveLength(0);
+    expect(acceptCalls).toHaveLength(0);
+    // Daemon backed off with base backoff.
+    expect(sleeps[0]).toBe(50);
+  });
+
+  test("cycleActivity reflects last completed action (accept > tick > plan > slice)", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listNeedsSlicingFn: async () => [{ id: 1, prdPath: "docs/prd/0001.md" }],
+        sliceFn: async () => {},
+        listNeedsPlanReviewFn: async () => [{ id: 2, prdPath: "docs/prd/0002.md" }],
+        planFn: async () => {},
+        listTrackingParentsFn: async () => [3],
+        tickFn: async () => IDLE_RESULT,
+        listAcceptReadyFn: async () => [4],
+        acceptFn: async () => {},
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // biome-ignore lint/style/noNonNullAssertion: array index is safe in test
+    expect(heartbeats[0]!.activity).toBe("accept #4");
+  });
+});
