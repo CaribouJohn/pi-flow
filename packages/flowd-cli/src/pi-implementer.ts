@@ -21,6 +21,8 @@ export interface PiImplementerOptions {
   workdir: string;
   /** The track branch the slice merges into — used to detect existing work. */
   trackBranch: string;
+  /** The exact verify-gate command (config.verifyCommand) the agent must run green. */
+  verifyCommand: string;
   model: ModelId;
   credentials: CredentialStore;
   sessionFactory?: CodingSessionFactory;
@@ -40,12 +42,14 @@ export class PiImplementer {
   private readonly commit: (workdir: string, message: string) => Promise<boolean>;
   private readonly checkout: (workdir: string, branch: string) => Promise<void>;
   private readonly trackBranch: string;
+  private readonly verifyCommand: string;
   private readonly hasCommitsAhead: (workdir: string, base: string) => Promise<boolean>;
 
   constructor(opts: PiImplementerOptions) {
     this.repo = opts.repo;
     this.workdir = opts.workdir;
     this.trackBranch = opts.trackBranch;
+    this.verifyCommand = opts.verifyCommand;
     this.model = opts.model;
     this.credentials = opts.credentials;
     this.sessionFactory = opts.sessionFactory ?? realSessionFactory;
@@ -68,7 +72,7 @@ export class PiImplementer {
       throw new Error(`slice #${ctx.sliceId} has no brief (empty issue body)`);
     }
     const session = await this.sessionFactory({ model: this.model, apiKey, cwd: this.workdir });
-    await session.prompt(buildImplementPrompt(brief, ctx.priorFindings));
+    await session.prompt(buildImplementPrompt(brief, this.verifyCommand, ctx.priorFindings));
 
     const committed = await this.commit(this.workdir, `flow-bot: implement slice #${ctx.sliceId}`);
     // Success = the slice branch carries an implementation. That's true if this
@@ -97,10 +101,25 @@ export class PiImplementer {
   }
 }
 
-export function buildImplementPrompt(brief: string, priorFindings?: string[]): string {
+export function buildImplementPrompt(
+  brief: string,
+  verifyCommand: string,
+  priorFindings?: string[],
+): string {
   const base = [
     "You are implementing a single, self-contained slice of work in this repository.",
-    "Read the brief, make the change, and ensure the project's verify gate passes.",
+    "Read the brief and make the change.",
+    "",
+    "## Verify gate (mandatory before you finish)",
+    "Before you consider the work done, you MUST run the project's verify gate — this exact",
+    "command, in full, not a self-chosen subset of it:",
+    "",
+    `    ${verifyCommand}`,
+    "",
+    "Run that command and confirm it exits cleanly (every step — lint, typecheck, and tests —",
+    "green). If it fails, fix the cause and run it again until it passes. The gate spans the",
+    "WHOLE repository: a change to a shared interface or type can break a different package",
+    "than the one you edited, so running only one package's tests is not enough.",
     "",
     "## Brief",
     brief,

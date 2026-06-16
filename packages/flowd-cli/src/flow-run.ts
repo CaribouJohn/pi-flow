@@ -49,6 +49,7 @@ export function buildPorts(config: FlowdConfig, credentials: CredentialStore): O
     repo: config.repo,
     workdir: config.workdir,
     trackBranch: config.trackBranch,
+    verifyCommand: config.verifyCommand,
     model: config.models.implement,
     credentials,
   });
