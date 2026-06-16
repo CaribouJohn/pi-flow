@@ -2,6 +2,7 @@
 import { planInvocation } from "./cli.ts";
 import { loadConfig } from "./config.ts";
 import { runPlan } from "./flow-plan.ts";
+import { rejectTrack } from "./flow-reject.ts";
 import { runFlow } from "./flow-run.ts";
 
 const plan = planInvocation(process.argv.slice(2));
@@ -13,6 +14,15 @@ if (plan.kind === "usage") {
 const configPath = plan.config ?? process.env.FLOWD_CONFIG ?? "flowd.config.json";
 try {
   const config = await loadConfig(configPath);
+
+  if (plan.kind === "reject") {
+    const result = await rejectTrack({ track: plan.track, reason: plan.reason, config });
+    console.log(`corrective: #${result.correctiveId}`);
+    if (result.acceptanceId !== undefined) {
+      console.log(`acceptance: #${result.acceptanceId} (kept open)`);
+    }
+    process.exit(0);
+  }
 
   if (plan.kind === "plan") {
     const result = await runPlan({ issue: plan.issue, prdPath: plan.prd, config });
