@@ -63,10 +63,14 @@ excludes from merging `main` directly (ADR-0038, invariant #1 layer 3).
    - **Issues:** Read & Write (create/label issues, post comments)
    - **Pull requests:** Read & Write (open/merge PRs)
 
-   > **No `read:org` needed.** These three permissions are sufficient for
-   > both the initial `flowd accept` run (opens the PR) and every idempotent
-   > re-run (looks up the existing PR by head branch). The lookup only queries
-   > `number` and `baseRefName` — no org/team fields (`login`/`name`/`slug`).
+   > **`read:org` is currently required.** The three permissions above cover
+   > the initial `flowd accept` run (opens the PR), but the idempotent re-run
+   > (existing-PR / accept path) surfaces an org/team GraphQL field
+   > (`login`/`name`/`slug`) via `gh`, which requires `read:org`. A PAT
+   > without it will fail with
+   > `'login'/'name'/'slug' field requires one of ['read:org','read:discussion']`.
+   > Add **Organization permissions → Members → Read-only** (`read:org`) until
+   > the query is narrowed (tracked in #172).
 
 4. Copy the token (it is shown only once).
 
