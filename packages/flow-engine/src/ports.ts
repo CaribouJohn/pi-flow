@@ -7,6 +7,7 @@
 import type {
   Category,
   Effort,
+  MainProtection,
   PlanReviewVerdict,
   PullRequest,
   ReviewPolicy,
@@ -84,6 +85,12 @@ export interface ForgePort {
    * branch already exists so a re-run is a no-op (SPEC §8.8).
    */
   createTrackBranch(branch: string): Promise<void>;
+  /**
+   * Read the default branch's merge-protection state (ADR-0038 precondition).
+   * Returns `{ requiresPr: false, requiresNonAuthorApproval: false }` when the
+   * branch has no protection rule (personal/sandbox repos). Never throws.
+   */
+  getMainProtection(): Promise<MainProtection>;
 }
 
 /** Context handed to an agent role for one slice. */

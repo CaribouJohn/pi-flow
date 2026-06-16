@@ -10,6 +10,7 @@ import type {
   CreateItemParams,
   Effort,
   ForgePort,
+  MainProtection,
   OrchestratorPorts,
   PlanReviewVerdict,
   PullRequest,
@@ -57,6 +58,12 @@ export interface FakeConfig {
   planReviewError?: Error;
   /** Slice ids whose refreshSliceFromTrack returns false (simulate a merge conflict). */
   refreshConflictSlices?: number[];
+  /**
+   * Main-branch protection state returned by getMainProtection.
+   * Defaults to fully protected (requiresPr + requiresNonAuthorApproval = true)
+   * so existing tests are unaffected.
+   */
+  mainProtection?: MainProtection;
 }
 
 interface Rec {
@@ -270,6 +277,8 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     createTrackBranch: async (branch) => {
       counts.createTrackBranch.push(branch);
     },
+    getMainProtection: async () =>
+      config.mainProtection ?? { requiresPr: true, requiresNonAuthorApproval: true },
   };
 
   const agent: AgentPort = {
