@@ -20,7 +20,7 @@ import { type CredentialStore, FileCredentialStore } from "./credentials.ts";
 import { scrubProviderEnvKeys } from "./env-scrub.ts";
 import { makeForgeGhRunner, makeForgeRunner, readForgeToken } from "./forge-auth.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
-import { GitHubTrackerAdapter } from "./github-tracker.ts";
+import { GitHubTrackerAdapter, parseTrackBranch } from "./github-tracker.ts";
 import { PiImplementer } from "./pi-implementer.ts";
 import { PiPlanReviewer } from "./pi-plan-reviewer.ts";
 import { PiReviewer } from "./pi-reviewer.ts";
@@ -131,14 +131,13 @@ export function makeCommitHistoryToTrack(
 /**
  * Compose the real adapters into the engine's ports.
  *
- * `trackBranch` must be derived from the track being driven (e.g.
- * `track/${trackId}`) so that `PiImplementer.hasCommitsAhead` checks against
- * the correct base branch and `makeCommitHistoryToTrack` commits cost records
- * to the right branch.  In single-track mode this is always `track/<id>`;
- * in all-tracks mode each call to `runFlow` provides its own value.
- * Do NOT pass `config.trackBranch` here — it is a static config value that
- * will be wrong for every track except the one it was written for.
+ * `trackBranch` must be the **resolved** track branch for the driven track,
+ * obtained via `resolveTrackBranch()` (reads the `Track-branch:` marker from
+ * the parent body; falls back to `config.trackBranch`).  This ensures
+ * `PiImplementer.hasCommitsAhead` and `makeCommitHistoryToTrack` operate on
+ * the correct branch for every track in all-tracks mode.
  */
+
 export function buildPorts(
   config: FlowdConfig,
   credentials: CredentialStore,
@@ -267,6 +266,25 @@ export function estimateFlowCost(
  * The path is relative to the repository root.  The daemon reads it each
  * cycle; updating the line in the issue body re-points the slicer.
  */
+/**
+ * Resolve a track's git branch from its parent issue body.
+ *
+ * Reads the `Track-branch: <branch>` marker written by the plan gate (T13
+ * clear path).  Falls back to `fallback` (typically `config.trackBranch`)
+ * when the marker is absent — covers legacy parents and the very first
+ * `runFlow` tick of a `needs-plan-review` track before the gate fires.
+ *
+ * Exported for unit tests.
+ */
+export async function resolveTrackBranch(
+  trackId: number,
+  tracker: { getItemBody(id: number): Promise<string> },
+  fallback: string,
+): Promise<string> {
+  const body = await tracker.getItemBody(trackId);
+  return parseTrackBranch(body) ?? fallback;
+}
+
 export function parsePrdPath(body: string): string | null {
   for (const line of body.split(/\r?\n/)) {
     const m = line.match(/^PRD:\s*(.+)$/);
@@ -400,11 +418,17 @@ export async function runFlow(config: FlowdConfig, trackId: number): Promise<Run
   assertWorkdirIsolated(workdir, process.cwd());
   const resolved: FlowdConfig = { ...config, workdir };
   await ensureWorkdir(resolved.repo, workdir);
-  // Derive the track branch from the trackId so each tracking parent uses its
-  // own git branch (e.g. track/5, track/10).  Passing config.trackBranch would
-  // be wrong in all-tracks mode because it is a single static value that only
-  // matches one of the N driven tracks.
-  const trackBranch = `track/${trackId}`;
+  // Resolve the track branch from the parent's `Track-branch:` marker (written
+  // by the plan gate on T13 clear).  Falls back to config.trackBranch for
+  // legacy parents (e.g. #106) and for the first tick of a needs-plan-review
+  // track before the plan gate has fired.  A temp tracker is built here so the
+  // resolution happens before buildPorts, which needs the branch up front for
+  // PiImplementer and makeCommitHistoryToTrack.
+  const tempTracker = new GitHubTrackerAdapter({
+    repo: resolved.repo,
+    run: makeForgeGhRunner(forgeToken),
+  });
+  const trackBranch = await resolveTrackBranch(trackId, tempTracker, config.trackBranch);
   const ports = buildPorts(resolved, credentials, forgeToken, trackBranch);
 
   const opts = {

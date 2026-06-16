@@ -40,6 +40,8 @@ export interface TrackerPort {
   setDependencies(itemId: number, dependsOn: number[]): Promise<void>;
   /** Read an item's body text (for stable-identity dedup). */
   getItemBody(itemId: number): Promise<string>;
+  /** Replace an item's body text. Used by the plan gate to persist the Track-branch marker. */
+  updateBody(itemId: number, body: string): Promise<void>;
 }
 
 /** Parameters for `createItem` — the fields the writer sets on a new child. */
