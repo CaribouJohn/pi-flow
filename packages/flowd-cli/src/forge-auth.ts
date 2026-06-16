@@ -14,7 +14,7 @@ export async function readForgeToken(store: CredentialStore): Promise<string> {
   const token = await store.get(FORGE_CREDENTIAL_KEY);
   if (token === null) {
     throw new Error(
-      `[forge-auth] no forge PAT found in the credential store under key "${FORGE_CREDENTIAL_KEY}". Store the flow-bot PAT with: flowd credentials set ${FORGE_CREDENTIAL_KEY} <PAT>. See docs/RUNBOOK.md — "flow-bot setup" for the one-time setup instructions.`,
+      `[forge-auth] no forge PAT found in the credential store under key "${FORGE_CREDENTIAL_KEY}". Add the flow-bot PAT by editing .flowd/credentials.json and setting the "${FORGE_CREDENTIAL_KEY}" key to your PAT value. See docs/RUNBOOK.md — "flow-bot setup" for the one-time setup instructions.`,
     );
   }
   return token;
