@@ -132,9 +132,12 @@ track branch:
    method stubbed to throw but only ever faked in tests, an invalid CLI flag, an unwired
    module. Static review can't catch those either. Acceptance is the only place they surface,
    so the live run is mandatory, not optional. (Codified after a shipped feature passed every
-   gate yet failed on first real invocation — SPEC §5.5/§7.)
-2. **Accept** → the **maintainer** opens the track-branch → `main` PR and merges it (only the
-   maintainer merges `main`, ADR-0001). Close the acceptance issue and the `tracking` parent.
+   gate yet failed on first real invocation — SPEC §5.5/§7.) **Open the track-branch → `main`
+   PR as part of presenting** — so the maintainer's only remaining action is the merge click.
+   Opening a PR is not merging `main`; the agent opens, the maintainer merges (ADR-0001).
+2. **Accept** → the **maintainer merges** the track-branch → `main` PR (only the maintainer
+   merges `main`, ADR-0001 — the agent has already opened it in step 1). Close the acceptance
+   issue and the `tracking` parent.
    A slice whose PR was merged **out-of-band** (e.g. a maintainer/bot resolved a conflict and
    merged it) won't have been closed by the loop — close its issue so it isn't re-picked.
 3. **Reject** → file a **corrective issue/slice on the track branch** (it never reaches
