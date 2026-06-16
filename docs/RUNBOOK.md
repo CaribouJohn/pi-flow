@@ -37,7 +37,64 @@ This (re)creates `CaribouJohn/pi-flow-sandbox` with a `tracking` parent (#1), th
 `track/sandbox-demo` branch, and one `ready-for-agent` slice (#2: "add add(a,b) +
 test"). Re-running is a no-op.
 
-## 3. Provide API keys (credential store)
+## 3. flow-bot setup (one-time, out-of-band)
+
+All autonomous forge operations (issues, PRs, labels, comments, `git push`)
+authenticate as the **flow-bot** principal rather than the ambient maintainer.
+This gives unambiguous attribution and is the identity that branch protection
+excludes from merging `main` directly (ADR-0038, invariant #1 layer 3).
+
+### 3a. Create the flow-bot account
+
+1. Create a separate GitHub account (e.g. `pi-flow-bot`) — GitHub requires a
+   unique email address per account.
+2. Log in to the **sandbox repo** as the maintainer and go to
+   **Settings → Collaborators → Add people**.
+3. Invite `pi-flow-bot` with **Write** access (not Admin — Write is the minimum
+   needed to push branches, open PRs, and post comments).
+4. Accept the invite from the bot account.
+
+### 3b. Create the flow-bot PAT
+
+1. Log in as `pi-flow-bot`.
+2. Go to **Settings → Developer settings → Personal access tokens → Fine-grained**.
+3. Create a token with these permissions for the target repo:
+   - **Contents:** Read & Write (push branches)
+   - **Issues:** Read & Write (create/label issues, post comments)
+   - **Pull requests:** Read & Write (open/merge PRs)
+4. Copy the token (it is shown only once).
+
+### 3c. Branch-protection precondition (ADR-0038)
+
+On the target repo's **`main`** branch, enable **branch protection**:
+- ✅ Require a pull request before merging
+- ✅ Require at least **1 approving review** (non-author)
+- ✅ Do NOT grant `pi-flow-bot` bypass — the bot must go through PR + human
+  approval like everyone else.
+
+This ensures flowd can never merge `main` unilaterally even if a future code
+bug tried to. `flowd run` will warn at start-up when this protection is absent.
+
+### 3d. Store the PAT in the credential store
+
+The forge PAT lives alongside the model API keys in `.flowd/credentials.json`
+under the reserved key `"forge"`:
+
+```json
+{
+  "schemaVersion": 1,
+  "keys": {
+    "forge": "github_pat_...",
+    "anthropic": "sk-ant-...",
+    "openai": "sk-..."
+  }
+}
+```
+
+flowd will refuse to start with a clear error if the `"forge"` key is absent —
+there is no silent fallback to the ambient `gh` session or `GH_TOKEN` env var.
+
+## 4. Provide API keys (credential store)
 
 flowd reads keys from a credential-store JSON (never the ambient env). Create the
 file referenced by `credentialsPath` (default `.flowd/credentials.json`):
@@ -46,6 +103,7 @@ file referenced by `credentialsPath` (default `.flowd/credentials.json`):
 {
   "schemaVersion": 1,
   "keys": {
+    "forge": "github_pat_...",
     "anthropic": "sk-ant-...",
     "openai": "sk-..."
   }
@@ -55,7 +113,7 @@ file referenced by `credentialsPath` (default `.flowd/credentials.json`):
 Use the provider names that match your `models` config. The file is 0600 on
 POSIX and is git-ignored; it must never be committed.
 
-## 4. Configure flowd
+## 5. Configure flowd
 
 ```sh
 cp flowd.config.example.json flowd.config.json
@@ -65,7 +123,7 @@ Edit `flowd.config.json`: set `models.review` to your chosen *different* model,
 confirm `repo`/`trackBranch`, and `actor` (the assignee/attribution identity).
 `flowd.config.json` and `.flowd-workdir/` are git-ignored.
 
-## 5. Run
+## 6. Run
 
 ```sh
 bun packages/flowd-cli/src/index.ts run --track 1 --config flowd.config.json
@@ -94,9 +152,9 @@ outcome: fixpoint
 
 `main` of the sandbox is untouched; `track/sandbox-demo` has the merged change.
 
-## 6. `flowd plan` — the front bookend (PRD → plan → gate)
+## 7. `flowd plan` — the front bookend (PRD → plan → gate)
 
-### 6a. Prepare a canned PRD
+### 7a. Prepare a canned PRD
 
 Create a local PRD file for a simple feature:
 
@@ -114,7 +172,7 @@ Build a simple CLI calculator that accepts two numbers and an operator
 PRD
 ```
 
-### 6b. Create a `needs-slicing` parent issue
+### 7b. Create a `needs-slicing` parent issue
 
 Create an issue in the sandbox repo with the `needs-slicing` role label:
 
@@ -127,7 +185,7 @@ gh issue create \
 gh issue edit 3 --repo CaribouJohn/pi-flow-sandbox --add-label needs-slicing
 ```
 
-### 6c. Run `flowd plan`
+### 7c. Run `flowd plan`
 
 ```sh
 bun packages/flowd-cli/src/index.ts plan \
@@ -166,7 +224,7 @@ gate: clear
 cost: ≈ $0.12, 2 slices
 ```
 
-### 6d. Handoff smoke: run the first produced slice
+### 7d. Handoff smoke: run the first produced slice
 
 After `flowd plan` clears the track, `flowd run` can claim the first slice:
 
@@ -178,7 +236,7 @@ This proves the **plan → run handoff**: the slice #4 (created by the plan)
 has `Parent: #3` and role `ready-for-agent`, so `flowd run` discovers it,
 claims it, and implements it through the full S0–S8 loop.
 
-### 6e. Escalation smoke (injected `effort:high`)
+### 7e. Escalation smoke (injected `effort:high`)
 
 To test the escalation path, manually edit one of the created child issues
 to carry an `effort:high` label:
@@ -190,7 +248,7 @@ gh issue edit 4 --repo CaribouJohn/pi-flow-sandbox --add-label effort:high
 Then re-run `flowd plan` — the parent should stay in `needs-plan-review`
 with an escalation marker comment naming the `effort:high` risk.
 
-## 7. Full-chain evidence (PRD → plan → run → fixpoint)
+## 8. Full-chain evidence (PRD → plan → run → fixpoint)
 
 For the acceptance criterion requiring one full-chain capture:
 
@@ -203,7 +261,7 @@ bun packages/flowd-cli/src/index.ts run --track N --config flowd.config.json > r
 # 4. Attach plan-out.txt + run-out.txt as evidence.
 ```
 
-## 8. Verify the harder paths
+## 9. Verify the harder paths
 
 - **Bounded changes loop:** break the planted slice's expectation (e.g. edit #2's
   brief to demand something the reviewer will reject), re-run, and confirm it
@@ -212,7 +270,7 @@ bun packages/flowd-cli/src/index.ts run --track N --config flowd.config.json > r
   `outcome: fixpoint` immediately with no claim/implement/merge steps (slice #2
   is closed).
 
-## 9. Pointing at a real repo (later)
+## 10. Pointing at a real repo (later)
 
 Change `repo`/`trackBranch`/`models` in the config. For any non-sandbox repo,
 first configure **branch protection on `main`** excluding the autonomous identity

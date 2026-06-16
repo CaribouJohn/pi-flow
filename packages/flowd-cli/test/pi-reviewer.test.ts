@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Verdict } from "@pi-flow/flow-engine";
+import { type Verdict, ZERO_SLICE_COST } from "@pi-flow/flow-engine";
 import { PiReviewer, REVIEWER_TOOLS, VERDICT_TOOL, buildReviewPrompt } from "../src/pi-reviewer.ts";
 import { makeCredentials } from "./helpers.ts";
 
@@ -43,6 +43,7 @@ describe("PiReviewer.review", () => {
               const exec = tool.execute as unknown as (id: string, p: Verdict) => Promise<unknown>;
               await exec("call-1", opts.submit);
             }
+            return ZERO_SLICE_COST;
           },
         };
       },
@@ -52,31 +53,29 @@ describe("PiReviewer.review", () => {
 
   test("returns the verdict the reviewer submits (APPROVE)", async () => {
     const { rev } = reviewer({ submit: { decision: "APPROVE", findings: [] } });
-    expect(await rev.review({ sliceId: 2, branch: "slice/2" })).toEqual({
-      decision: "APPROVE",
-      findings: [],
-    });
+    const result = await rev.review({ sliceId: 2, branch: "slice/2" });
+    expect(result.verdict).toEqual({ decision: "APPROVE", findings: [] });
+    expect(result.cost).toBeDefined();
   });
 
   test("returns REQUEST_CHANGES with findings", async () => {
     const v: Verdict = { decision: "REQUEST_CHANGES", findings: ["dropped a null check"] };
     const { rev } = reviewer({ submit: v });
-    expect(await rev.review({ sliceId: 2, branch: "slice/2" })).toEqual(v);
+    const result = await rev.review({ sliceId: 2, branch: "slice/2" });
+    expect(result.verdict).toEqual(v);
   });
 
   test("nudges and captures a verdict submitted only after the nudge", async () => {
     const { rev } = reviewer({ submit: { decision: "APPROVE", findings: [] }, submitOnCall: 2 });
-    expect(await rev.review({ sliceId: 2, branch: "slice/2" })).toEqual({
-      decision: "APPROVE",
-      findings: [],
-    });
+    const result = await rev.review({ sliceId: 2, branch: "slice/2" });
+    expect(result.verdict).toEqual({ decision: "APPROVE", findings: [] });
   });
 
   test("fails safe to REQUEST_CHANGES when no verdict is submitted even after the nudge", async () => {
     const { rev } = reviewer({});
     const r = await rev.review({ sliceId: 2, branch: "slice/2" });
-    expect(r.decision).toBe("REQUEST_CHANGES");
-    expect(r.findings.join(" ")).toContain("did not submit");
+    expect(r.verdict.decision).toBe("REQUEST_CHANGES");
+    expect(r.verdict.findings.join(" ")).toContain("did not submit");
   });
 
   test("allowlists read-only tools + submit_verdict (no bash/write)", async () => {

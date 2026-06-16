@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { PlanReviewVerdict } from "@pi-flow/flow-engine";
+import { type PlanReviewVerdict, ZERO_SLICE_COST } from "@pi-flow/flow-engine";
 import {
   PLAN_REVIEW_TOOLS,
   PLAN_VERDICT_TOOL,
@@ -110,6 +110,7 @@ describe("PiPlanReviewer.review", () => {
               ) => Promise<unknown>;
               await exec("call-1", opts.submit);
             }
+            return ZERO_SLICE_COST;
           },
         };
       },
@@ -205,6 +206,7 @@ describe("PiPlanReviewer.review", () => {
               childAgentReady: { "10": { pass: true } },
             });
           }
+          return ZERO_SLICE_COST;
         },
       }),
     });
@@ -251,6 +253,7 @@ describe("PiPlanReviewer.review", () => {
             for (const id of viewedIds.filter((n) => n !== 77)) ready[String(id)] = { pass: true };
             await exec("c", { decision: "CLEAR", risks: [], childAgentReady: ready });
           }
+          return ZERO_SLICE_COST;
         },
       }),
     });
@@ -297,6 +300,7 @@ describe("PiPlanReviewer.review", () => {
               childAgentReady: { "10": { pass: true } },
             });
           }
+          return ZERO_SLICE_COST;
         },
       }),
     });
@@ -348,6 +352,7 @@ describe("PiPlanReviewer.review", () => {
                 childAgentReady: { "10": { pass: true }, "11": { pass: true } },
               });
             }
+            return ZERO_SLICE_COST;
           },
         };
       },

@@ -7,10 +7,12 @@
 import type {
   Category,
   Effort,
+  MainProtection,
   PlanReviewVerdict,
   PullRequest,
   ReviewPolicy,
   Role,
+  SliceCost,
   Track,
   TrackerSlice,
   Verdict,
@@ -83,6 +85,32 @@ export interface ForgePort {
    * branch already exists so a re-run is a no-op (SPEC §8.8).
    */
   createTrackBranch(branch: string): Promise<void>;
+  /**
+   * Read the default branch's merge-protection state (ADR-0038 precondition).
+   * Returns `{ requiresPr: false, requiresNonAuthorApproval: false }` when the
+   * branch has no protection rule (personal/sandbox repos). Never throws.
+   */
+  getMainProtection(): Promise<MainProtection>;
+  /**
+   * Look up the open track→main PR by head branch (A1 idempotent re-run).
+   * Returns null when no open PR exists with that head.
+   */
+  getTrackPr(headBranch: string): Promise<PullRequest | null>;
+  /**
+   * Open the track→main PR (A1). The base is always the default branch.
+   * The engine never merges this PR — parking for the human is invariant #1.
+   */
+  openTrackPr(params: {
+    head: string;
+    base: string;
+    title: string;
+    body: string;
+  }): Promise<PullRequest>;
+  /**
+   * Replace the body of an existing PR (A1 idempotent re-run: body may change
+   * if slices were added/re-run since the PR was first opened).
+   */
+  updatePrBody(prNumber: number, newBody: string): Promise<void>;
 }
 
 /** Context handed to an agent role for one slice. */
@@ -93,18 +121,39 @@ export interface AgentContext {
   priorFindings?: string[];
 }
 
+/** The verdict + metered cost of one review session. */
+export interface ReviewResult {
+  verdict: Verdict;
+  cost: SliceCost;
+}
+
 /** The two role agents — guaranteed distinct sessions + models by the caller. */
 export interface AgentPort {
-  /** Write the slice's code (S2). The real impl is a `pi-coding-agent` session. */
-  implement(ctx: AgentContext): Promise<void>;
-  /** Adversarially review the slice; return a structured verdict (S6). */
-  review(ctx: AgentContext): Promise<Verdict>;
+  /**
+   * Write the slice's code (S2). The real impl is a `pi-coding-agent` session.
+   * Returns the metered cost of the implement session.
+   */
+  implement(ctx: AgentContext): Promise<SliceCost>;
+  /**
+   * Adversarially review the slice; return a structured verdict + session cost (S6).
+   * The cost is accumulated into the slice's running total by the orchestrator.
+   */
+  review(ctx: AgentContext): Promise<ReviewResult>;
   /**
    * Plan-review agent (T13/T14) — a separate Pi session on a *different
    * model* than the slicer (SPEC §9 invariant #2). Returns a structured
    * verdict the orchestrator combines with deterministic checks.
    */
   planReview(trackId: number): Promise<PlanReviewVerdict>;
+}
+
+/**
+ * Cost-meter port — called at slice merge time to record actual vs. estimated
+ * cost, post a tracker comment, and append to the cost-history JSONL.
+ * Implementations MUST NOT throw: overruns are flagged, never halt the build.
+ */
+export interface CostMeterPort {
+  record(params: { sliceId: number; effort: Effort | undefined; cost: SliceCost }): Promise<void>;
 }
 
 /** The deterministic verify gate (S3) — the profile's must-pass command. */
@@ -117,4 +166,6 @@ export interface OrchestratorPorts {
   forge: ForgePort;
   agent: AgentPort;
   verify: VerifyGatePort;
+  /** Optional cost meter; skipped when absent (cost estimation not configured). */
+  costMeter?: CostMeterPort;
 }

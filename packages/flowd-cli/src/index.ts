@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
+import { runCalibrate } from "./calibrate.ts";
 import { planInvocation } from "./cli.ts";
 import { loadConfig } from "./config.ts";
+import { acceptTrack } from "./flow-accept.ts";
 import { runPlan } from "./flow-plan.ts";
+import { rejectTrack } from "./flow-reject.ts";
 import { runFlow } from "./flow-run.ts";
 
 const plan = planInvocation(process.argv.slice(2));
@@ -11,8 +14,43 @@ if (plan.kind === "usage") {
 }
 
 const configPath = plan.config ?? process.env.FLOWD_CONFIG ?? "flowd.config.json";
+
+// calibrate is read-only and works with or without a full config.
+if (plan.kind === "calibrate") {
+  try {
+    const config = await loadConfig(configPath).catch(() => undefined);
+    const historyPath = config?.costMeter?.historyPath ?? ".flowd/cost-history.jsonl";
+    await runCalibrate(historyPath, config?.costEstimator);
+  } catch (err) {
+    console.error("flowd calibrate failed:", err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
 try {
   const config = await loadConfig(configPath);
+
+  if (plan.kind === "accept") {
+    const result = await acceptTrack({ track: plan.track, config });
+    if (!result.ready) {
+      console.error("not ready — the following slices are still open:");
+      for (const reason of result.notReadyReasons ?? []) console.error(`  ${reason}`);
+      process.exit(1);
+    }
+    const action = result.created ? "opened" : "updated";
+    console.log(`pr: #${result.prNumber} (${action})`);
+    process.exit(0);
+  }
+
+  if (plan.kind === "reject") {
+    const result = await rejectTrack({ track: plan.track, reason: plan.reason, config });
+    console.log(`corrective: #${result.correctiveId}`);
+    if (result.acceptanceId !== undefined) {
+      console.log(`acceptance: #${result.acceptanceId} (kept open)`);
+    }
+    process.exit(0);
+  }
 
   if (plan.kind === "plan") {
     const result = await runPlan({ issue: plan.issue, prdPath: plan.prd, config });

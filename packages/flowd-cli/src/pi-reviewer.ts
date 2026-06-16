@@ -1,5 +1,11 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import type { AgentContext, Verdict } from "@pi-flow/flow-engine";
+import {
+  type AgentContext,
+  type ReviewResult,
+  type Verdict,
+  ZERO_SLICE_COST,
+  addSliceCosts,
+} from "@pi-flow/flow-engine";
 import { Type } from "typebox";
 import type { CredentialStore } from "./credentials.ts";
 import { sliceBranch } from "./git-forge.ts";
@@ -49,7 +55,7 @@ export class PiReviewer {
     this.checkout = opts.checkout ?? realCheckout;
   }
 
-  async review(ctx: AgentContext): Promise<Verdict> {
+  async review(ctx: AgentContext): Promise<ReviewResult> {
     const apiKey = await this.credentials.get(this.model.provider);
     if (apiKey === null) {
       throw new Error(`no API key for provider "${this.model.provider}" (reviewer)`);
@@ -87,19 +93,24 @@ export class PiReviewer {
       tools: [...REVIEWER_TOOLS, VERDICT_TOOL],
       customTools: [submitVerdict],
     });
-    await session.prompt(buildReviewPrompt(diff));
+
+    // Accumulate usage across all prompt() calls in this session.
+    let sessionCost = ZERO_SLICE_COST;
+    sessionCost = addSliceCosts(sessionCost, await session.prompt(buildReviewPrompt(diff)));
 
     // Some models state the verdict in prose instead of calling the tool. Nudge
     // once: the verdict only counts if it comes through submit_verdict.
     if (captured === null) {
-      await session.prompt(VERDICT_NUDGE);
+      sessionCost = addSliceCosts(sessionCost, await session.prompt(VERDICT_NUDGE));
     }
 
     // Fail safe: a reviewer that never submitted a verdict is treated as a
     // rejection, never a silent approve (never merge past an unclear gate).
-    return (
-      captured ?? { decision: "REQUEST_CHANGES", findings: ["reviewer did not submit a verdict"] }
-    );
+    const verdict: Verdict = captured ?? {
+      decision: "REQUEST_CHANGES",
+      findings: ["reviewer did not submit a verdict"],
+    };
+    return { verdict, cost: sessionCost };
   }
 
   private async fetchDiff(sliceId: number): Promise<string> {

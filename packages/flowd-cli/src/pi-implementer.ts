@@ -1,4 +1,9 @@
-import type { AgentContext } from "@pi-flow/flow-engine";
+import {
+  type AgentContext,
+  type SliceCost,
+  ZERO_SLICE_COST,
+  addSliceCosts,
+} from "@pi-flow/flow-engine";
 import type { CredentialStore } from "./credentials.ts";
 import type { ModelId } from "./model-config.ts";
 import {
@@ -55,7 +60,7 @@ export class PiImplementer {
     this.hasCommitsAhead = opts.hasCommitsAhead ?? realHasCommitsAhead;
   }
 
-  async implement(ctx: AgentContext): Promise<void> {
+  async implement(ctx: AgentContext): Promise<SliceCost> {
     const apiKey = await this.credentials.get(this.model.provider);
     if (apiKey === null) {
       throw new Error(`no API key for provider "${this.model.provider}" (implementer)`);
@@ -68,7 +73,12 @@ export class PiImplementer {
       throw new Error(`slice #${ctx.sliceId} has no brief (empty issue body)`);
     }
     const session = await this.sessionFactory({ model: this.model, apiKey, cwd: this.workdir });
-    await session.prompt(buildImplementPrompt(brief, ctx.priorFindings));
+    // Accumulate usage across all prompt() calls in this session.
+    let sessionCost = ZERO_SLICE_COST;
+    sessionCost = addSliceCosts(
+      sessionCost,
+      await session.prompt(buildImplementPrompt(brief, ctx.priorFindings)),
+    );
 
     const committed = await this.commit(this.workdir, `flow-bot: implement slice #${ctx.sliceId}`);
     // Success = the slice branch carries an implementation. That's true if this
@@ -79,6 +89,7 @@ export class PiImplementer {
     if (!hasWork) {
       throw new Error(`implementer produced no changes for slice #${ctx.sliceId}`);
     }
+    return sessionCost;
   }
 
   private async fetchBrief(sliceId: number): Promise<string> {

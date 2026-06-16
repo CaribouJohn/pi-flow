@@ -10,17 +10,21 @@ import type {
   CreateItemParams,
   Effort,
   ForgePort,
+  MainProtection,
   OrchestratorPorts,
   PlanReviewVerdict,
   PullRequest,
   ReviewPolicy,
+  ReviewResult,
   Role,
+  SliceCost,
   Track,
   TrackerPort,
   TrackerSlice,
   Verdict,
   VerifyGatePort,
 } from "../src/index.ts";
+import { ZERO_SLICE_COST } from "../src/index.ts";
 
 export interface FakeSliceSpec {
   id: number;
@@ -54,6 +58,14 @@ export interface FakeConfig {
   planReviewError?: Error;
   /** Slice ids whose refreshSliceFromTrack returns false (simulate a merge conflict). */
   refreshConflictSlices?: number[];
+  /**
+   * Main-branch protection state returned by getMainProtection.
+   * Defaults to fully protected (requiresPr + requiresNonAuthorApproval = true)
+   * so existing tests are unaffected.
+   */
+  mainProtection?: MainProtection;
+  /** Pre-existing track→main PR (for A1 idempotent re-run tests). */
+  trackPr?: PullRequest | null;
 }
 
 interface Rec {
@@ -97,6 +109,10 @@ export interface FakeFlow {
     createdItems: { parentId: number; title: string; id: number; role: Role }[];
     /** Dependency writes via setDependencies: (itemId, dependsOn[]). */
     dependencyWrites: { id: number; dependsOn: number[] }[];
+    /** Track PR opens via openTrackPr (A1). */
+    openedTrackPr: { head: string; base: string; title: string; body: string }[];
+    /** PR body updates via updatePrBody (A1 re-run). */
+    updatedPrBodies: { prNumber: number; newBody: string }[];
   };
 }
 
@@ -149,6 +165,8 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     planReview: [],
     createdItems: [],
     dependencyWrites: [],
+    openedTrackPr: [],
+    updatedPrBodies: [],
   };
   let prCounter = 100;
 
@@ -267,15 +285,41 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     createTrackBranch: async (branch) => {
       counts.createTrackBranch.push(branch);
     },
+    getMainProtection: async () =>
+      config.mainProtection ?? { requiresPr: true, requiresNonAuthorApproval: true },
+    getTrackPr: async (headBranch: string) => {
+      if (headBranch !== track.branch) {
+        throw new Error(
+          `fake: getTrackPr called with branch "${headBranch}" but track branch is "${track.branch}"`,
+        );
+      }
+      const pr = config.trackPr ?? null;
+      return pr === null ? null : { ...pr };
+    },
+    openTrackPr: async (params) => {
+      const pr: PullRequest = {
+        number: ++prCounter,
+        base: params.base,
+        status: "open",
+        reviewAttempts: 0,
+      };
+      counts.openedTrackPr.push({ ...params });
+      return { ...pr };
+    },
+    updatePrBody: async (prNumber, newBody) => {
+      counts.updatedPrBodies.push({ prNumber, newBody });
+    },
   };
 
   const agent: AgentPort = {
-    implement: async (ctx: AgentContext) => {
+    implement: async (ctx: AgentContext): Promise<SliceCost> => {
       counts.implement.push({ sliceId: ctx.sliceId, priorFindings: ctx.priorFindings });
+      return ZERO_SLICE_COST;
     },
-    review: async (ctx: AgentContext): Promise<Verdict> => {
+    review: async (ctx: AgentContext): Promise<ReviewResult> => {
       counts.review.push(ctx.sliceId);
-      return reviewQueues.get(ctx.sliceId)?.shift() ?? APPROVE;
+      const verdict = reviewQueues.get(ctx.sliceId)?.shift() ?? APPROVE;
+      return { verdict, cost: ZERO_SLICE_COST };
     },
     planReview: async (trackId): Promise<PlanReviewVerdict> => {
       counts.planReview.push(trackId);

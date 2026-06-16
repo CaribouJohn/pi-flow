@@ -3,8 +3,8 @@
   "defaultBranch": "main",
   "trackBranch": "track/sandbox-demo",
   "workdir": ".flowd-workdir",
-  "actor": "CaribouJohn",
-  "aiDisclaimer": "🤖 Posted by pi-flow on behalf of @CaribouJohn",
+  "actor": "flow-bot",
+  "aiDisclaimer": "🤖 pi-flow (automated)",
   "reviewerIterationCap": 2,
   "verifyCommand": "bun run verify",
   "credentialsPath": ".flowd/credentials.json",
@@ -13,6 +13,10 @@
     "review": { "provider": "openai", "id": "gpt-5" },
     "slice": { "provider": "anthropic", "id": "claude-opus-4-8" },
     "planReview": { "provider": "openai", "id": "gpt-5" }
+  },
+  "costMeter": {
+    "overrunThresholdFraction": 0.2,
+    "historyPath": ".flowd/cost-history.jsonl"
   },
   "costEstimator": {
     "_": "ALL values in this section are PROVISIONAL v1 guesses — calibration from measured actuals is PRD-0004 (out of scope).",

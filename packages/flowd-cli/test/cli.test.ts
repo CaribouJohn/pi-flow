@@ -8,6 +8,7 @@ describe("parseArgs", () => {
       track: 7,
       issue: undefined,
       prd: undefined,
+      reason: undefined,
       config: "c.json",
     });
   });
@@ -18,6 +19,7 @@ describe("parseArgs", () => {
       track: undefined,
       issue: undefined,
       prd: undefined,
+      reason: undefined,
       config: undefined,
     });
   });
@@ -28,6 +30,7 @@ describe("parseArgs", () => {
       track: undefined,
       issue: undefined,
       prd: undefined,
+      reason: undefined,
       config: undefined,
     });
   });
@@ -38,6 +41,7 @@ describe("parseArgs", () => {
       track: undefined,
       issue: 5,
       prd: "docs/prd/foo.md",
+      reason: undefined,
       config: undefined,
     });
   });
@@ -48,6 +52,7 @@ describe("parseArgs", () => {
       track: undefined,
       issue: 5,
       prd: "p.md",
+      reason: undefined,
       config: "c.json",
     });
   });
@@ -139,5 +144,41 @@ describe("planInvocation", () => {
     if (p.kind === "usage") {
       expect(p.message).toContain("--prd");
     }
+  });
+
+  // ── accept command ──
+
+  test("accept: valid invocation", () => {
+    expect(planInvocation(["accept", "--track", "7"])).toEqual({
+      kind: "accept",
+      track: 7,
+      config: undefined,
+    });
+  });
+
+  test("accept: with --config", () => {
+    expect(planInvocation(["accept", "--track", "3", "--config", "c.json"])).toEqual({
+      kind: "accept",
+      track: 3,
+      config: "c.json",
+    });
+  });
+
+  test("accept: missing --track is a usage error", () => {
+    expect(planInvocation(["accept"])).toMatchObject({ kind: "usage", code: 2 });
+  });
+
+  test("accept: non-numeric track is a usage error", () => {
+    expect(planInvocation(["accept", "--track", "abc"])).toMatchObject({
+      kind: "usage",
+      code: 2,
+    });
+  });
+
+  test("accept: zero track is a usage error", () => {
+    expect(planInvocation(["accept", "--track", "0"])).toMatchObject({
+      kind: "usage",
+      code: 2,
+    });
   });
 });

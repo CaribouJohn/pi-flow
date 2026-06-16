@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { SlicePlan } from "@pi-flow/flow-engine";
+import { type SlicePlan, ZERO_SLICE_COST } from "@pi-flow/flow-engine";
 import { PiSlicer, SLICER_TOOLS, SLICE_PLAN_TOOL, buildSlicePrompt } from "../src/pi-slicer.ts";
 import { makeCredentials } from "./helpers.ts";
 
@@ -116,6 +116,7 @@ describe("PiSlicer.slice", () => {
               ) => Promise<unknown>;
               await exec("call-1", opts.submit);
             }
+            return ZERO_SLICE_COST;
           },
         };
       },

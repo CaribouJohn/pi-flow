@@ -1,4 +1,4 @@
-import type { ForgePort, PullRequest, Verdict } from "@pi-flow/flow-engine";
+import type { ForgePort, MainProtection, PullRequest, Verdict } from "@pi-flow/flow-engine";
 import { $ } from "bun";
 
 /**
@@ -252,6 +252,57 @@ export class GitForgeAdapter implements ForgePort {
     await this.gh(["pr", "merge", String(prNumber), "--repo", this.repo, "--squash"]);
   }
 
+  /**
+   * Read the default branch's merge-protection state (ADR-0038 precondition).
+   * Checks classic branch-protection first; on 404 falls back to the rulesets
+   * effective-rules surface (`/repos/{repo}/rules/branches/{branch}`) so that
+   * repos protected only via rulesets (no classic rule) are not falsely reported
+   * as unprotected.  Returns unprotected defaults only when both surfaces miss.
+   */
+  async getMainProtection(): Promise<MainProtection> {
+    // --- 1. Classic branch-protection API ---
+    try {
+      const out = await this.gh([
+        "api",
+        `repos/${this.repo}/branches/${this.defaultBranch}/protection`,
+      ]);
+      const data = JSON.parse(out) as {
+        required_pull_request_reviews?: { required_approving_review_count?: number };
+      };
+      const rpr = data.required_pull_request_reviews;
+      return {
+        requiresPr: rpr !== undefined,
+        requiresNonAuthorApproval: (rpr?.required_approving_review_count ?? 0) >= 1,
+      };
+    } catch {
+      // Classic protection absent — fall through to rulesets surface.
+    }
+
+    // --- 2. Rulesets effective-rules API ---
+    // GET /repos/{repo}/rules/branches/{branch} returns an array of rule objects
+    // that are currently active for that branch, regardless of ruleset type.
+    try {
+      const out = await this.gh(["api", `repos/${this.repo}/rules/branches/${this.defaultBranch}`]);
+      const rules = JSON.parse(out) as Array<{
+        type: string;
+        parameters?: { required_approving_review_count?: number };
+      }>;
+      const prRule = rules.find((r) => r.type === "pull_request");
+      if (prRule !== undefined) {
+        const reviewCount = prRule.parameters?.required_approving_review_count ?? 0;
+        return {
+          requiresPr: true,
+          requiresNonAuthorApproval: reviewCount >= 1,
+        };
+      }
+    } catch {
+      // Rulesets surface also unavailable — fall through to unprotected default.
+    }
+
+    // Branch is unprotected (personal repo, sandbox, or API unavailable).
+    return { requiresPr: false, requiresNonAuthorApproval: false };
+  }
+
   async deleteBranch(branch: string): Promise<void> {
     // Tolerant: the branch may already be gone (e.g. merge auto-deleted it).
     await this.run("git", ["push", "origin", "--delete", branch], { cwd: this.workdir }).catch(
@@ -277,9 +328,85 @@ export class GitForgeAdapter implements ForgePort {
     }
     await this.git(["push", "-u", "origin", branch]);
   }
+
+  /**
+   * Look up the open track→main PR by head branch (A1 idempotent re-run).
+   * Returns null when no open PR exists with that head.
+   */
+  async getTrackPr(headBranch: string): Promise<PullRequest | null> {
+    const out = await this.gh([
+      "pr",
+      "list",
+      "--repo",
+      this.repo,
+      "--head",
+      headBranch,
+      "--base",
+      this.defaultBranch,
+      "--state",
+      "open",
+      "--json",
+      "number,baseRefName",
+    ]);
+    const prs = JSON.parse(out) as { number: number; baseRefName: string }[];
+    const pr = prs[0];
+    if (pr === undefined) return null;
+    return { number: pr.number, base: pr.baseRefName, status: "open", reviewAttempts: 0 };
+  }
+
+  /**
+   * Open the track→main PR (A1). The base is always the default branch.
+   * The engine never merges this PR — parking for the human is invariant #1.
+   */
+  async openTrackPr(params: {
+    head: string;
+    base: string;
+    title: string;
+    body: string;
+  }): Promise<PullRequest> {
+    const out = await this.gh([
+      "pr",
+      "create",
+      "--repo",
+      this.repo,
+      "--head",
+      params.head,
+      "--base",
+      params.base,
+      "--title",
+      params.title,
+      "--body",
+      params.body,
+    ]);
+    const number = parsePrNumber(out);
+    return { number, base: params.base, status: "open", reviewAttempts: 0 };
+  }
+
+  /**
+   * Replace the body of an existing PR (A1 idempotent re-run: body may change
+   * if slices were added/re-run since the PR was first opened).
+   */
+  async updatePrBody(prNumber: number, newBody: string): Promise<void> {
+    await this.gh(["pr", "edit", String(prNumber), "--repo", this.repo, "--body", newBody]);
+  }
 }
 
 // --- pure helpers (unit-tested directly) ---
+
+/**
+ * Verify ADR-0038 invariant #1 (layer 3): main must require a PR with at least
+ * one non-author approval so the flow-bot principal cannot merge unilaterally.
+ *
+ * Returns a warning string when the protection is absent or incomplete; null
+ * when the boundary is in place. Never throws.
+ */
+export function checkMainProtectionWarning(
+  protection: MainProtection,
+  actor: string,
+): string | null {
+  if (protection.requiresPr && protection.requiresNonAuthorApproval) return null;
+  return `\u26a0 main is not protected against ${actor} \u2014 invariant #1 on layer 3 only`;
+}
 
 interface GhPr {
   number: number;
@@ -343,7 +470,7 @@ function parseMarker(body: string): Marker | null {
   }
 }
 
-function parsePrNumber(ghCreateOutput: string): number {
+export function parsePrNumber(ghCreateOutput: string): number {
   const n = Number(ghCreateOutput.trim().split("/").pop());
   if (!Number.isInteger(n) || n <= 0)
     throw new Error(`could not parse PR number from: ${ghCreateOutput.trim()}`);
