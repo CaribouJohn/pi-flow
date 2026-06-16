@@ -239,6 +239,9 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     getItemBody: async (itemId) => {
       return must(itemId).body;
     },
+    listByRole: async (role) => {
+      return [...recs.values()].filter((r) => r.role === role && !r.closed).map((r) => r.id);
+    },
   };
 
   const forge: ForgePort = {

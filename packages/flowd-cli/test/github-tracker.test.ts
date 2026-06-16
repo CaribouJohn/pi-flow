@@ -246,3 +246,28 @@ describe("GitHubTrackerAdapter", () => {
     ]);
   });
 });
+
+describe("GitHubTrackerAdapter — listByRole", () => {
+  test("returns issue numbers of open issues with the given label", async () => {
+    const calls: string[][] = [];
+    const run: GhRunner = async (args) => {
+      calls.push(args);
+      return JSON.stringify([{ number: 5 }, { number: 12 }, { number: 99 }]);
+    };
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
+    const ids = await tracker.listByRole("tracking");
+
+    expect(ids).toEqual([5, 12, 99]);
+    // Should filter by the given role label and state=open.
+    const listCall = calls.find((c) => c[1] === "list");
+    expect(listCall).toBeDefined();
+    expect(listCall).toContain("tracking");
+    expect(listCall).toContain("open");
+  });
+
+  test("returns empty array when no issues match", async () => {
+    const run: GhRunner = async () => JSON.stringify([]);
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
+    expect(await tracker.listByRole("ready-for-agent")).toEqual([]);
+  });
+});

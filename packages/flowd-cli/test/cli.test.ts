@@ -202,18 +202,22 @@ describe("planInvocation — daemon", () => {
     });
   });
 
-  test("daemon: missing --track is a usage error", () => {
-    expect(planInvocation(["daemon"])).toMatchObject({ kind: "usage", code: 2 });
+  test("daemon without --track runs in all-tracks mode (not a usage error)", () => {
+    expect(planInvocation(["daemon"])).toEqual({
+      kind: "daemon",
+      track: undefined,
+      config: undefined,
+    });
   });
 
-  test("daemon: non-numeric track is a usage error", () => {
+  test("daemon: non-numeric --track is a usage error", () => {
     expect(planInvocation(["daemon", "--track", "abc"])).toMatchObject({
       kind: "usage",
       code: 2,
     });
   });
 
-  test("daemon: zero track is a usage error", () => {
+  test("daemon: zero --track is a usage error", () => {
     expect(planInvocation(["daemon", "--track", "0"])).toMatchObject({
       kind: "usage",
       code: 2,

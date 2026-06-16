@@ -18,7 +18,7 @@ const USAGE = [
   "       flowd accept --track <n> [--config <path>]",
   "       flowd calibrate [--config <path>]",
   "       flowd status [--config <path>]",
-  "       flowd daemon --track <n> [--config <path>]",
+  "       flowd daemon [--track <n>] [--config <path>]",
 ].join("\n");
 
 /**
@@ -67,7 +67,7 @@ export type RunPlan =
   | { kind: "accept"; track: number; config: string | undefined }
   | { kind: "calibrate"; config: string | undefined }
   | { kind: "status"; config: string | undefined }
-  | { kind: "daemon"; track: number; config: string | undefined };
+  | { kind: "daemon"; track: number | undefined; config: string | undefined };
 
 /** Validate the invocation and decide what to do (pure; the entry runs it). */
 export function planInvocation(argv: string[]): RunPlan {
@@ -122,7 +122,10 @@ export function planInvocation(argv: string[]): RunPlan {
   }
 
   if (command === "daemon") {
-    if (track === undefined || !Number.isInteger(track) || track < 1) {
+    // --track is optional for daemon (all-tracks mode when absent).
+    // When explicitly provided it must be a valid positive integer.
+    const trackFlagPresent = argv.includes("--track");
+    if (trackFlagPresent && (track === undefined || !Number.isInteger(track) || track < 1)) {
       return {
         kind: "usage",
         code: 2,

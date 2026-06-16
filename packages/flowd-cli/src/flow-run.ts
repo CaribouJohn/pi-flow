@@ -239,6 +239,22 @@ export function estimateFlowCost(
   return estimateTrackCost(slices, config).formatted;
 }
 
+/**
+ * Return the issue numbers of all open `tracking` parents in the repo.
+ * Used by the daemon's all-tracks mode (PRD-0005 §3) to derive the cycle's
+ * work list each iteration.
+ */
+export async function listTrackingParents(config: FlowdConfig): Promise<number[]> {
+  const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  const forgeToken = await readForgeToken(credentials);
+  const tracker = new GitHubTrackerAdapter({
+    repo: config.repo,
+    trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
+  });
+  return tracker.listByRole("tracking");
+}
+
 /** Drive one track's slice loop (S0–S8) to a fixpoint with the real adapters. */
 export async function runFlow(config: FlowdConfig, trackId: number): Promise<RunResult> {
   // Use only credential-store keys, never ambient env (ADR-0029).

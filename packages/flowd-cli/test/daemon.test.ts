@@ -1134,3 +1134,222 @@ describe("runDaemon — fatal errors: halt + non-zero exit", () => {
     expect(exitCodes).toHaveLength(0);
   });
 });
+
+// ── all-tracks mode (PRD-0005 §3) ────────────────────────────────────────────
+
+describe("runDaemon — all-tracks mode (trackId = undefined)", () => {
+  test("each tracking parent is driven once per cycle, in order", async () => {
+    const driven: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listTrackingParentsFn: async () => [10, 20, 30],
+        tickFn: async (_cfg, tid) => {
+          driven.push(tid);
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          cycle++;
+          if (cycle >= 1) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // All three parents driven in order within the single cycle.
+    expect(driven).toEqual([10, 20, 30]);
+  });
+
+  test("N tracking parents → N tickFn calls per cycle, sequentially", async () => {
+    const driven: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listTrackingParentsFn: async () => [1, 2, 3, 4, 5],
+        tickFn: async (_cfg, tid) => {
+          driven.push(tid);
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          cycle++;
+          if (cycle >= 1) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(driven).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  test("when --track override is provided, listTrackingParentsFn is ignored", async () => {
+    const listCalls: number[] = [];
+    const driven: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      99, // explicit single-track override
+      makeDeps({
+        listTrackingParentsFn: async () => {
+          listCalls.push(1);
+          return [10, 20];
+        },
+        tickFn: async (_cfg, tid) => {
+          driven.push(tid);
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // listTrackingParentsFn must never be called in single-track mode.
+    expect(listCalls).toHaveLength(0);
+    // Only the override track was driven.
+    expect(driven).toEqual([99]);
+  });
+
+  test("empty tracking parent list → idle cycle (no tickFn calls)", async () => {
+    let tickCount = 0;
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listTrackingParentsFn: async () => [],
+        tickFn: async () => {
+          tickCount++;
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(tickCount).toBe(0);
+  });
+
+  test("each parent is driven on every cycle, not just the first", async () => {
+    const driven: number[] = [];
+    const ac = new AbortController();
+    let cycle = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listTrackingParentsFn: async () => [7, 8],
+        tickFn: async (_cfg, tid) => {
+          driven.push(tid);
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          cycle++;
+          if (cycle >= 2) ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Two full cycles: [7, 8] then [7, 8]
+    expect(driven).toEqual([7, 8, 7, 8]);
+  });
+
+  test("transient error on one track stops remaining tracks in cycle + backs off", async () => {
+    const driven: number[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        backoffBaseMs: 50,
+        backoffMaxMs: 1_000,
+        listTrackingParentsFn: async () => [1, 2, 3],
+        tickFn: async (_cfg, tid) => {
+          driven.push(tid);
+          if (tid === 2) throw new Error("network timeout");
+          return IDLE_RESULT;
+        },
+        // Abort during sleep so the backoff duration is captured before we stop.
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    // Track 1 succeeded; track 2 errored; track 3 was skipped.
+    expect(driven).toEqual([1, 2]);
+    // Slept with backoff (not pollCadenceMs).
+    expect(sleeps[0]).toBe(50);
+  });
+
+  test("listTrackingParentsFn error is treated as transient — daemon degrades + backs off", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let attempt = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        backoffBaseMs: 75,
+        backoffMaxMs: 1_000,
+        listTrackingParentsFn: async () => {
+          attempt++;
+          throw new Error("GitHub unavailable");
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+        },
+        // Abort during sleep so the backoff duration is captured before we stop.
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(heartbeats[0]).toMatchObject({ status: "degraded", consecutiveErrors: 1 });
+    expect(sleeps[0]).toBe(75);
+  });
+
+  test("log lines include the track id for each driven parent", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      undefined,
+      makeDeps({
+        listTrackingParentsFn: async () => [11, 22],
+        log: (line) => logs.push(line),
+        writeHeartbeat: async () => {
+          ac.abort();
+        },
+      }),
+      ac.signal,
+    );
+
+    const trackLogs = logs.filter((l) => l.track !== undefined);
+    expect(trackLogs.map((l) => l.track)).toEqual([11, 22]);
+  });
+});

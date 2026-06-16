@@ -84,6 +84,23 @@ export class GitHubTrackerAdapter implements TrackerPort {
     return parseRole(labels) ?? "needs-triage";
   }
 
+  async listByRole(role: Role): Promise<number[]> {
+    const out = await this.run([
+      "issue",
+      "list",
+      "--repo",
+      this.repo,
+      "--state",
+      "open",
+      "--label",
+      role,
+      "--json",
+      "number",
+    ]);
+    const issues = JSON.parse(out) as { number: number }[];
+    return issues.map((i) => i.number);
+  }
+
   async listSlices(trackId: number): Promise<TrackerSlice[]> {
     const out = await this.run([
       "issue",
