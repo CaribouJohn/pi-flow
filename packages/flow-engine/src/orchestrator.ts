@@ -8,7 +8,14 @@
  * (SPEC §8.8): a duplicate run over a finished world is a no-op.
  */
 import { isAssignable } from "./derive.ts";
-import type { Slice, Track, World } from "./domain.ts";
+import {
+  type Slice,
+  type SliceCost,
+  type Track,
+  type World,
+  ZERO_SLICE_COST,
+  addSliceCosts,
+} from "./domain.ts";
 import type { OrchestratorPorts } from "./ports.ts";
 
 export type Action =
@@ -59,6 +66,8 @@ interface ApplyOutcome {
   detail?: string;
   /** Set when a gate the orchestrator cannot clear forces a park. */
   park?: string;
+  /** Metered cost produced by this action (implement or review). */
+  cost?: SliceCost;
 }
 
 /**
@@ -123,6 +132,10 @@ export async function runTrack(
   // S0 — drift-refresh on (re)entry. Idempotent: a no-op when already current.
   await ports.forge.driftRefresh(track.branch);
 
+  // Accumulate metered cost per slice across implement + review sessions.
+  // Keyed by sliceId; populated by apply() via the returned `cost` field.
+  const sliceCosts = new Map<number, SliceCost>();
+
   for (;;) {
     const world = await readWorld(ports, track);
     const action = decide(world, opts.reviewerIterationCap);
@@ -135,7 +148,7 @@ export async function runTrack(
       return { steps, outcome: "parked", parkedReason: action.reason };
     }
 
-    const outcome = await apply(action, world, ports, opts);
+    const outcome = await apply(action, world, ports, opts, sliceCosts);
     if (outcome.park !== undefined) {
       await ports.tracker.comment(action.sliceId, disclaim(opts, `Parked: ${outcome.park}.`));
       steps.push({ action: "park", sliceId: action.sliceId, detail: outcome.park });
@@ -162,6 +175,7 @@ async function apply(
   world: World,
   ports: OrchestratorPorts,
   opts: RunOptions,
+  sliceCosts: Map<number, SliceCost>,
 ): Promise<ApplyOutcome> {
   const slice = world.slices.find((s) => s.id === action.sliceId);
   if (slice === undefined) throw new Error(`apply: slice ${action.sliceId} not in world`);
@@ -172,17 +186,27 @@ async function apply(
       return { detail: `assignee=${opts.actor}` };
 
     case "implement":
-    case "reimplement":
-      return implementSlice(action.kind, slice, world, ports, opts);
+    case "reimplement": {
+      const outcome = await implementSlice(action.kind, slice, world, ports, opts);
+      // Accumulate implement cost even when parking (partial cost still counts).
+      if (outcome.cost !== undefined) {
+        const prev = sliceCosts.get(slice.id) ?? ZERO_SLICE_COST;
+        sliceCosts.set(slice.id, addSliceCosts(prev, outcome.cost));
+      }
+      return outcome;
+    }
 
     case "review": {
       const pr = requirePr(slice, "review");
       // The reviewer investigates the slice fresh — it is NOT handed the prior
       // round's findings (those are implementer context, fed back on S6a).
-      const verdict = await ports.agent.review({
+      const { verdict, cost: reviewCost } = await ports.agent.review({
         sliceId: slice.id,
         branch: requireBranch(slice, "review"),
       });
+      // Accumulate review cost.
+      const prevReview = sliceCosts.get(slice.id) ?? ZERO_SLICE_COST;
+      sliceCosts.set(slice.id, addSliceCosts(prevReview, reviewCost));
       await ports.forge.recordReviewVerdict(pr.number, verdict);
       await ports.tracker.comment(slice.id, disclaim(opts, reviewComment(verdict)));
       return { detail: `review: ${verdict.decision}` };
@@ -218,6 +242,21 @@ async function apply(
         slice.id,
         disclaim(opts, "Merged into the track branch; slice closed."),
       );
+      // Cost-meter recording at merge time — never halts the build.
+      if (ports.costMeter !== undefined) {
+        const totalCost = sliceCosts.get(slice.id);
+        if (totalCost !== undefined) {
+          await ports.costMeter
+            .record({ sliceId: slice.id, effort: slice.effort, cost: totalCost })
+            .catch((err: unknown) => {
+              console.warn(
+                `[cost-meter] record failed for slice #${slice.id} (ignored): ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            });
+        }
+      }
       return { detail: `merged PR #${pr.number}; closed slice` };
     }
   }
@@ -236,10 +275,10 @@ async function implementSlice(
 
   // S2 — implement. The agent owns iterating to a green verify gate internally
   // (SPEC §8.7); the orchestrator gates S3 once and parks on a red result.
-  await ports.agent.implement({ sliceId: slice.id, branch, priorFindings });
+  const implCost = await ports.agent.implement({ sliceId: slice.id, branch, priorFindings });
   const gate = await ports.verify.run(slice.id);
   if (!gate.green) {
-    return { park: redGate("verify gate red", gate.output) };
+    return { park: redGate("verify gate red", gate.output), cost: implCost };
   }
 
   if (kind === "reimplement" && slice.pr !== null) {
@@ -247,12 +286,15 @@ async function implementSlice(
     // PR diff stays at the original code and the reviewer never sees the fix.
     await ports.forge.pushSlice(slice.id);
     await ports.forge.reopenForReview(slice.pr.number);
-    return { detail: `re-implemented; PR #${slice.pr.number} re-opened for review` };
+    return {
+      detail: `re-implemented; PR #${slice.pr.number} re-opened for review`,
+      cost: implCost,
+    };
   }
 
   // S5 — open the slice PR with base = the track branch.
   const pr = await ports.forge.openPr(slice.id, world.track.branch);
-  return { detail: `PR #${pr.number} opened (base=${pr.base})` };
+  return { detail: `PR #${pr.number} opened (base=${pr.base})`, cost: implCost };
 }
 
 function requirePr(slice: Slice, step: string) {

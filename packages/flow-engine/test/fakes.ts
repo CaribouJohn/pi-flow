@@ -15,13 +15,16 @@ import type {
   PlanReviewVerdict,
   PullRequest,
   ReviewPolicy,
+  ReviewResult,
   Role,
+  SliceCost,
   Track,
   TrackerPort,
   TrackerSlice,
   Verdict,
   VerifyGatePort,
 } from "../src/index.ts";
+import { ZERO_SLICE_COST } from "../src/index.ts";
 
 export interface FakeSliceSpec {
   id: number;
@@ -279,12 +282,14 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
   };
 
   const agent: AgentPort = {
-    implement: async (ctx: AgentContext) => {
+    implement: async (ctx: AgentContext): Promise<SliceCost> => {
       counts.implement.push({ sliceId: ctx.sliceId, priorFindings: ctx.priorFindings });
+      return ZERO_SLICE_COST;
     },
-    review: async (ctx: AgentContext): Promise<Verdict> => {
+    review: async (ctx: AgentContext): Promise<ReviewResult> => {
       counts.review.push(ctx.sliceId);
-      return reviewQueues.get(ctx.sliceId)?.shift() ?? APPROVE;
+      const verdict = reviewQueues.get(ctx.sliceId)?.shift() ?? APPROVE;
+      return { verdict, cost: ZERO_SLICE_COST };
     },
     planReview: async (trackId): Promise<PlanReviewVerdict> => {
       counts.planReview.push(trackId);

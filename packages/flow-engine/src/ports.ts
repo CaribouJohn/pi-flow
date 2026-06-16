@@ -12,6 +12,7 @@ import type {
   PullRequest,
   ReviewPolicy,
   Role,
+  SliceCost,
   Track,
   TrackerSlice,
   Verdict,
@@ -100,18 +101,39 @@ export interface AgentContext {
   priorFindings?: string[];
 }
 
+/** The verdict + metered cost of one review session. */
+export interface ReviewResult {
+  verdict: Verdict;
+  cost: SliceCost;
+}
+
 /** The two role agents — guaranteed distinct sessions + models by the caller. */
 export interface AgentPort {
-  /** Write the slice's code (S2). The real impl is a `pi-coding-agent` session. */
-  implement(ctx: AgentContext): Promise<void>;
-  /** Adversarially review the slice; return a structured verdict (S6). */
-  review(ctx: AgentContext): Promise<Verdict>;
+  /**
+   * Write the slice's code (S2). The real impl is a `pi-coding-agent` session.
+   * Returns the metered cost of the implement session.
+   */
+  implement(ctx: AgentContext): Promise<SliceCost>;
+  /**
+   * Adversarially review the slice; return a structured verdict + session cost (S6).
+   * The cost is accumulated into the slice's running total by the orchestrator.
+   */
+  review(ctx: AgentContext): Promise<ReviewResult>;
   /**
    * Plan-review agent (T13/T14) — a separate Pi session on a *different
    * model* than the slicer (SPEC §9 invariant #2). Returns a structured
    * verdict the orchestrator combines with deterministic checks.
    */
   planReview(trackId: number): Promise<PlanReviewVerdict>;
+}
+
+/**
+ * Cost-meter port — called at slice merge time to record actual vs. estimated
+ * cost, post a tracker comment, and append to the cost-history JSONL.
+ * Implementations MUST NOT throw: overruns are flagged, never halt the build.
+ */
+export interface CostMeterPort {
+  record(params: { sliceId: number; effort: Effort | undefined; cost: SliceCost }): Promise<void>;
 }
 
 /** The deterministic verify gate (S3) — the profile's must-pass command. */
@@ -124,4 +146,6 @@ export interface OrchestratorPorts {
   forge: ForgePort;
   agent: AgentPort;
   verify: VerifyGatePort;
+  /** Optional cost meter; skipped when absent (cost estimation not configured). */
+  costMeter?: CostMeterPort;
 }

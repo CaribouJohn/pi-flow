@@ -4,6 +4,7 @@ import {
   SessionManager,
   createAgentSession,
 } from "@earendil-works/pi-coding-agent";
+import { type SliceCost, ZERO_SLICE_COST, addSliceCosts } from "@pi-flow/flow-engine";
 import { $ } from "bun";
 import type { ModelId } from "./model-config.ts";
 
@@ -18,9 +19,15 @@ import type { ModelId } from "./model-config.ts";
  * be asserted in a unit test.
  */
 
-/** The minimal slice of a `pi-coding-agent` session this code drives. */
+/**
+ * The minimal slice of a `pi-coding-agent` session this code drives.
+ *
+ * `prompt()` now returns the metered cost of that single LLM turn, surfacing
+ * Pi's per-message `usage` (tokens + computed USD) instead of discarding it.
+ * Callers accumulate the results to compute a session total.
+ */
 export interface CodingSession {
-  prompt(text: string): Promise<void>;
+  prompt(text: string): Promise<SliceCost>;
 }
 
 /** The SDK's own option types, so our seam can't drift from `createAgentSession`. */
@@ -59,23 +66,58 @@ export const realSessionFactory: CodingSessionFactory = async (opts) => {
     ...(opts.customTools !== undefined ? { customTools: opts.customTools } : {}),
   });
 
-  // FLOWD_DEBUG=1 streams the agent's text + tool activity to stderr, so a run
-  // that "produced no changes" can be diagnosed (did the model act, or not?).
-  if (process.env.FLOWD_DEBUG !== undefined && process.env.FLOWD_DEBUG !== "") {
-    session.subscribe((event) => {
-      const e = event as unknown as {
-        type?: string;
-        assistantMessageEvent?: { type?: string; delta?: string };
+  // Capture per-message assistant usage for cost metering.
+  // Each `message_end` event for an assistant message carries a `usage` object
+  // with token counts and a computed USD cost (from pi-ai's Usage type).
+  const usageLog: SliceCost[] = [];
+  session.subscribe((event) => {
+    const e = event as unknown as {
+      type?: string;
+      message?: {
+        role?: string;
+        usage?: {
+          input: number;
+          output: number;
+          cacheRead: number;
+          cacheWrite: number;
+          totalTokens: number;
+          cost: { total: number };
+        };
       };
+      assistantMessageEvent?: { type?: string; delta?: string };
+    };
+
+    // Collect usage from each completed assistant message.
+    if (e.type === "message_end" && e.message?.role === "assistant" && e.message.usage) {
+      const u = e.message.usage;
+      usageLog.push({
+        costUSD: u.cost.total,
+        totalTokens: u.totalTokens,
+        inputTokens: u.input,
+        outputTokens: u.output,
+        cacheReadTokens: u.cacheRead,
+        cacheWriteTokens: u.cacheWrite,
+      });
+    }
+
+    // FLOWD_DEBUG=1 streams the agent's text + tool activity to stderr.
+    if (process.env.FLOWD_DEBUG !== undefined && process.env.FLOWD_DEBUG !== "") {
       if (e.type === "message_update" && e.assistantMessageEvent?.type === "text_delta") {
         process.stderr.write(e.assistantMessageEvent.delta ?? "");
       } else if (e.type !== undefined) {
         process.stderr.write(`\n[pi:${e.type}]\n`);
       }
-    });
-  }
+    }
+  });
 
-  return { prompt: (text: string) => session.prompt(text) };
+  return {
+    prompt: async (text: string): Promise<SliceCost> => {
+      const before = usageLog.length;
+      await session.prompt(text);
+      // Sum up all usage entries emitted during this prompt call.
+      return usageLog.slice(before).reduce(addSliceCosts, ZERO_SLICE_COST);
+    },
+  };
 };
 
 /** Run `gh` and return stdout (default dependency for fetching slice briefs). */

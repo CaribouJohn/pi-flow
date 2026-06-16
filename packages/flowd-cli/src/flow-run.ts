@@ -12,6 +12,7 @@ import {
 import { $ } from "bun";
 import type { FlowdConfig } from "./config.ts";
 import { type CostEstimatorConfig, estimateTrackCost } from "./cost-estimator.ts";
+import { CostMeterAdapter } from "./cost-meter.ts";
 import { type CredentialStore, FileCredentialStore } from "./credentials.ts";
 import { scrubProviderEnvKeys } from "./env-scrub.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
@@ -72,7 +73,18 @@ export function buildPorts(config: FlowdConfig, credentials: CredentialStore): O
     planReview: (trackId) => planReviewer.review(trackId),
   };
   const verify = makeVerifyGate(config.workdir, config.verifyCommand);
-  return { tracker, forge, agent, verify };
+  const costMeter =
+    config.costMeter !== undefined
+      ? new CostMeterAdapter({
+          config: config.costMeter,
+          tracker,
+          costEstimator: config.costEstimator,
+          implementModelId: config.models.implement.id,
+          reviewModelId: config.models.review.id,
+          aiDisclaimer: config.aiDisclaimer,
+        })
+      : undefined;
+  return { tracker, forge, agent, verify, costMeter };
 }
 
 /** Ensure the workdir is a clone of the repo (clone once, else fetch), with deps installed. */
