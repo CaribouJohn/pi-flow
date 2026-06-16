@@ -35,14 +35,30 @@ function envWithToken(token: string): Record<string, string> {
 }
 
 /**
- * Return a {@link CmdRunner} that injects `GH_TOKEN` into every subprocess it
- * spawns. Pass this to {@link GitForgeAdapter} so all `gh` and `git push` calls
- * authenticate as the flow-bot principal rather than the ambient user.
+ * Return a {@link CmdRunner} that authenticates every subprocess it spawns as
+ * the flow-bot principal (ADR-0038).
+ *
+ * - `gh` commands: re-identified via `GH_TOKEN` in the subprocess env.
+ * - `git` commands: re-identified via `-c http.extraheader="AUTHORIZATION:
+ *   bearer <token>"` so that `git push` / `git fetch` reach GitHub as
+ *   flow-bot rather than the ambient OS credential-store user.  `GH_TOKEN`
+ *   alone only affects the `gh` CLI; raw git ignores it and falls back to
+ *   the OS credential manager (the human), which breaks the last-pusher
+ *   invariant and causes the maintainer to be blocked at the track→main merge.
+ *
+ * The `-c` flag is a per-invocation override and is never persisted to
+ * `.git/config`, satisfying the no-persist requirement.
  */
 export function makeForgeRunner(token: string): CmdRunner {
   return async (cmd, args, opts) => {
     const env = envWithToken(token);
-    const proc = opts?.cwd ? $`${cmd} ${args}`.cwd(opts.cwd).env(env) : $`${cmd} ${args}`.env(env);
+    // Prepend the per-invocation extraheader for all git commands so that
+    // git push/fetch authenticate as the token holder, not the OS user.
+    const actualArgs =
+      cmd === "git" ? ["-c", `http.extraheader=AUTHORIZATION: bearer ${token}`, ...args] : args;
+    const proc = opts?.cwd
+      ? $`${cmd} ${actualArgs}`.cwd(opts.cwd).env(env)
+      : $`${cmd} ${actualArgs}`.env(env);
     return await proc.text();
   };
 }
