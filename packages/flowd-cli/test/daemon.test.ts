@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RunResult } from "@pi-flow/flow-engine";
 import type { FlowdConfig } from "../src/config.ts";
-import { type DaemonDeps, runDaemon } from "../src/daemon.ts";
+import { DEFAULT_BACKOFF_MAX_MS, type DaemonDeps, runDaemon } from "../src/daemon.ts";
 import type { DaemonHeartbeat } from "../src/status.ts";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -487,7 +487,7 @@ describe("runDaemon — structured log", () => {
 
     expect(logs[0]).toMatchObject({
       track: 5,
-      outcome: "error",
+      outcome: "degraded",
       consecutiveErrors: 1,
     });
     // biome-ignore lint/style/noNonNullAssertion: array index is safe in test
@@ -702,5 +702,435 @@ describe("runDaemon — NEEDS YOU log-on-entry", () => {
     );
 
     expect(logs.filter((l) => l.needsYou !== undefined)).toHaveLength(0);
+  });
+});
+
+// ── error classification + backoff (PRD-0005 §4.1) ───────────────────────────
+
+describe("runDaemon — transient errors: backoff + degraded status", () => {
+  test("first transient error → degraded heartbeat + backoffBaseMs sleep", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        backoffBaseMs: 100,
+        backoffMaxMs: 6_400,
+        tickFn: async () => {
+          tick++;
+          if (tick === 1) throw new Error("network timeout");
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+          if (tick >= 2) ac.abort();
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      }),
+      ac.signal,
+    );
+
+    // First heartbeat: after the transient error tick
+    expect(heartbeats[0]).toMatchObject({
+      consecutiveErrors: 1,
+      status: "degraded",
+    });
+    expect(heartbeats[0]?.activity).toContain("error:");
+    // Sleep should be the backoff base (100 ms), not pollCadenceMs
+    expect(sleeps[0]).toBe(100);
+  });
+
+  test("backoff grows exponentially on successive transient errors", async () => {
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        backoffBaseMs: 100,
+        backoffMaxMs: 6_400,
+        tickFn: async () => {
+          tick++;
+          if (tick <= 4) throw new Error("ECONNREFUSED");
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          if (tick > 4) ac.abort();
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      }),
+      ac.signal,
+    );
+
+    // Backoff doubles each time: 100 → 200 → 400 → 800
+    expect(sleeps[0]).toBe(100);
+    expect(sleeps[1]).toBe(200);
+    expect(sleeps[2]).toBe(400);
+    expect(sleeps[3]).toBe(800);
+  });
+
+  test("backoff is capped at backoffMaxMs", async () => {
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        backoffBaseMs: 100,
+        backoffMaxMs: 300,
+        tickFn: async () => {
+          tick++;
+          if (tick <= 5) throw new Error("500 Internal Server Error");
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          if (tick > 5) ac.abort();
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      }),
+      ac.signal,
+    );
+
+    // 100 → 200 → 300 (cap) → 300 (cap) → 300 (cap)
+    expect(sleeps[0]).toBe(100);
+    expect(sleeps[1]).toBe(200);
+    expect(sleeps[2]).toBe(300);
+    expect(sleeps[3]).toBe(300);
+    expect(sleeps[4]).toBe(300);
+  });
+
+  test("DEFAULT_BACKOFF_MAX_MS is exported and equals 300_000", () => {
+    expect(DEFAULT_BACKOFF_MAX_MS).toBe(300_000);
+  });
+
+  test("backoff and consecutiveErrors reset to 0 after a successful tick", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const sleeps: number[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        backoffBaseMs: 100,
+        backoffMaxMs: 6_400,
+        pollCadenceMs: 60_000,
+        tickFn: async () => {
+          tick++;
+          // Two transient errors then two successes
+          if (tick <= 2) throw new Error("429 Too Many Requests");
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+          // Abort on tick 4 so tick 3 (first success) has time to sleep
+          if (tick >= 4) ac.abort();
+        },
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+      }),
+      ac.signal,
+    );
+
+    // After two errors: backoff is 100, then 200
+    expect(sleeps[0]).toBe(100);
+    expect(sleeps[1]).toBe(200);
+
+    // Heartbeat after first success — reset
+    const successHb = heartbeats.find((hb) => hb.status === "ok");
+    expect(successHb).toBeDefined();
+    expect(successHb?.consecutiveErrors).toBe(0);
+
+    // Sleep after success should be pollCadenceMs (60_000), not backoff
+    expect(sleeps[2]).toBe(60_000);
+  });
+
+  test("log line on transient error has outcome=degraded + backoffMs field", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        backoffBaseMs: 50,
+        backoffMaxMs: 1_000,
+        tickFn: async () => {
+          tick++;
+          if (tick === 1) throw new Error("ENOTFOUND api.github.com");
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          if (tick >= 2) ac.abort();
+        },
+        log: (line) => {
+          logs.push(line);
+        },
+      }),
+      ac.signal,
+    );
+
+    const errLog = logs.find((l) => l.outcome === "degraded");
+    expect(errLog).toBeDefined();
+    expect(errLog).toMatchObject({
+      track: 5,
+      outcome: "degraded",
+      consecutiveErrors: 1,
+      backoffMs: 50,
+    });
+  });
+});
+
+describe("runDaemon — fatal errors: halt + non-zero exit", () => {
+  test("fatal error → halted heartbeat written before exitFn called", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const exitCodes: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        tickFn: async () => {
+          throw new Error("HTTP 401 Unauthorized");
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+        },
+        exitFn: (code) => {
+          exitCodes.push(code);
+        },
+      }),
+      ac.signal,
+    );
+
+    // A halted heartbeat must appear
+    const haltedHb = heartbeats.find((hb) => hb.status === "halted");
+    expect(haltedHb).toBeDefined();
+    expect(haltedHb?.activity).toContain("halted:");
+    expect(haltedHb?.consecutiveErrors).toBe(1);
+
+    // exitFn called with code 1
+    expect(exitCodes).toEqual([1]);
+  });
+
+  test("fatal error → log line has outcome=halted + message field", async () => {
+    const logs: Record<string, unknown>[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        tickFn: async () => {
+          throw new Error("HTTP 403 Forbidden");
+        },
+        log: (line) => {
+          logs.push(line);
+        },
+        exitFn: () => {},
+      }),
+      ac.signal,
+    );
+
+    const haltLog = logs.find((l) => l.outcome === "halted");
+    expect(haltLog).toBeDefined();
+    expect(haltLog).toMatchObject({
+      track: 5,
+      outcome: "halted",
+      consecutiveErrors: 1,
+    });
+    expect(String(haltLog?.message)).toContain("FATAL");
+    expect(String(haltLog?.error)).toContain("403");
+  });
+
+  test("fatal error → daemon stops without additional ticks", async () => {
+    let tickCount = 0;
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        tickFn: async () => {
+          tickCount++;
+          throw new Error("repository not found");
+        },
+        exitFn: () => {},
+      }),
+      ac.signal,
+    );
+
+    // Only one tick ran — the daemon halted immediately
+    expect(tickCount).toBe(1);
+  });
+
+  test("fatal error → does NOT overwrite halted heartbeat with shutdown", async () => {
+    const heartbeats: DaemonHeartbeat[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        tickFn: async () => {
+          throw new Error("invalid config schema");
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+        },
+        exitFn: () => {},
+      }),
+      ac.signal,
+    );
+
+    // No "shutdown" heartbeat should follow the "halted" one
+    const activities = heartbeats.map((hb) => hb.status ?? hb.activity);
+    expect(activities).not.toContain("shutdown");
+    // Only the halted heartbeat
+    expect(heartbeats.filter((hb) => hb.status === "halted")).toHaveLength(1);
+  });
+
+  test("auth 403 is fatal", async () => {
+    const exitCodes: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        tickFn: async () => {
+          throw new Error("Request failed with status 403");
+        },
+        exitFn: (code) => {
+          exitCodes.push(code);
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(exitCodes).toEqual([1]);
+  });
+
+  test("repo 404 is fatal", async () => {
+    const exitCodes: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        tickFn: async () => {
+          throw new Error("404 Not Found");
+        },
+        exitFn: (code) => {
+          exitCodes.push(code);
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(exitCodes).toEqual([1]);
+  });
+
+  test("missing credential is fatal", async () => {
+    const exitCodes: number[] = [];
+    const ac = new AbortController();
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        tickFn: async () => {
+          throw new Error("missing credential: GITHUB_TOKEN");
+        },
+        exitFn: (code) => {
+          exitCodes.push(code);
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(exitCodes).toEqual([1]);
+  });
+
+  test("network timeout is transient (not fatal)", async () => {
+    const exitCodes: number[] = [];
+    const heartbeats: DaemonHeartbeat[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        backoffBaseMs: 10,
+        backoffMaxMs: 100,
+        tickFn: async () => {
+          tick++;
+          if (tick === 1) throw new Error("network timeout");
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async (hb) => {
+          heartbeats.push(hb);
+          if (tick >= 2) ac.abort();
+        },
+        exitFn: (code) => {
+          exitCodes.push(code);
+        },
+      }),
+      ac.signal,
+    );
+
+    // exitFn should NOT have been called
+    expect(exitCodes).toHaveLength(0);
+    // degraded heartbeat written
+    expect(heartbeats.some((hb) => hb.status === "degraded")).toBe(true);
+  });
+
+  test("5xx is transient (not fatal)", async () => {
+    const exitCodes: number[] = [];
+    const ac = new AbortController();
+    let tick = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        backoffBaseMs: 10,
+        backoffMaxMs: 100,
+        tickFn: async () => {
+          tick++;
+          if (tick === 1) throw new Error("503 Service Unavailable");
+          return IDLE_RESULT;
+        },
+        writeHeartbeat: async () => {
+          if (tick >= 2) ac.abort();
+        },
+        exitFn: (code) => {
+          exitCodes.push(code);
+        },
+      }),
+      ac.signal,
+    );
+
+    expect(exitCodes).toHaveLength(0);
   });
 });
