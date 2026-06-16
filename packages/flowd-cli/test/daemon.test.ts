@@ -1854,9 +1854,11 @@ describe("runDaemon — listing success paths reset backoff", () => {
 describe("runDaemon — abortable idle sleep", () => {
   test("abort during idle sleep resolves the daemon without waiting for the full sleep", async () => {
     // The sleep dep returns a never-resolving promise to simulate a long idle
-    // cadence (e.g. 30 s).  The abort signal must race and win so the daemon
-    // exits immediately rather than hanging until the sleep timer fires.
+    // cadence (e.g. 30 s).  The abort signal fires *inside* the sleep mock via
+    // queueMicrotask so the Promise.race is already awaiting when the stop
+    // fires — this is the path that actually exercises the race mechanism.
     const ac = new AbortController();
+    let sleepEntered = false;
     let sleepCompleted = false;
 
     await runDaemon(
@@ -1864,23 +1866,31 @@ describe("runDaemon — abortable idle sleep", () => {
       5,
       makeDeps({
         sleep: async (_ms) => {
-          // Simulate a long sleep that would normally block shutdown.
+          sleepEntered = true;
+          // Schedule abort AFTER Promise.race([sleep, stopPromise]) is already
+          // awaiting — stopPromise must win the race so the daemon exits
+          // without ever resolving the sleep side.
+          queueMicrotask(() => ac.abort());
           await new Promise<void>(() => {}); // never resolves on its own
           sleepCompleted = true; // unreachable if the race works correctly
         },
-        writeHeartbeat: async () => {
-          // Simulate SIGINT arriving while the daemon is mid-sleep.
-          ac.abort();
-        },
+        // writeHeartbeat intentionally does NOT abort — the abort must arrive
+        // mid-sleep so the pre-sleep `if (stopping) break` guard is bypassed
+        // and the race is genuinely exercised.
       }),
       ac.signal,
     );
 
-    // The daemon must have exited without the sleep promise resolving.
+    // The daemon entered sleep (proving the race was set up) …
+    expect(sleepEntered).toBe(true);
+    // … but the sleep promise never resolved — stopPromise won the race.
     expect(sleepCompleted).toBe(false);
   });
 
   test("abort during idle sleep still writes the final shutdown heartbeat", async () => {
+    // Same setup: abort fires inside sleep via queueMicrotask so the
+    // Promise.race is what actually unblocks the loop, not the pre-sleep
+    // `if (stopping) break` guard.
     const ac = new AbortController();
     const heartbeats: DaemonHeartbeat[] = [];
 
@@ -1889,20 +1899,48 @@ describe("runDaemon — abortable idle sleep", () => {
       5,
       makeDeps({
         sleep: async (_ms) => {
-          await new Promise<void>(() => {}); // never resolves
+          // Abort after the race is set up — stopPromise side wins.
+          queueMicrotask(() => ac.abort());
+          await new Promise<void>(() => {}); // never resolves on its own
         },
         writeHeartbeat: async (hb) => {
+          // Collect heartbeats but do NOT abort here — the abort comes from
+          // inside sleep so the finally block runs and writes shutdown.
           heartbeats.push(hb);
-          // Abort on the first (in-loop) heartbeat — the finally block must
-          // still write the shutdown heartbeat afterwards.
-          ac.abort();
         },
       }),
       ac.signal,
     );
 
+    // The in-loop heartbeat plus the finally-block shutdown heartbeat.
     const last = heartbeats.at(-1);
     expect(last?.activity).toBe("shutdown");
+  });
+
+  test("pre-sleep stopping check is bypassed when stop arrives during sleep", async () => {
+    // Regression guard: confirms that it is Promise.race (not the
+    // `if (stopping) break` guard) that exits the loop when the signal fires
+    // while the daemon is mid-sleep.  The sleep mock counts how many times it
+    // is called; exactly one call must complete the race path.
+    const ac = new AbortController();
+    let sleepCallCount = 0;
+
+    await runDaemon(
+      FAKE_CONFIG,
+      5,
+      makeDeps({
+        sleep: async (_ms) => {
+          sleepCallCount++;
+          queueMicrotask(() => ac.abort());
+          await new Promise<void>(() => {}); // never resolves on its own
+        },
+      }),
+      ac.signal,
+    );
+
+    // sleep was called exactly once — the race resolved it, the loop
+    // exited, and no second iteration began.
+    expect(sleepCallCount).toBe(1);
   });
 });
 
