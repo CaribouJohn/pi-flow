@@ -38,6 +38,19 @@ export const DEFAULT_BACKOFF_BASE_MS = 5_000;
 /** Default maximum backoff cap (ms) — 5 minutes. */
 export const DEFAULT_BACKOFF_MAX_MS = 300_000;
 
+/**
+ * PRD-location convention (T12 auto-slice):
+ *
+ * A `needs-slicing` (or `needs-plan-review`) parent issue must contain a line
+ * in its body in the form:
+ *
+ *   PRD: docs/prd/NNNN-title.md
+ *
+ * The path is relative to the repository root.  The daemon reads this marker
+ * each cycle; changing the path in the issue body re-points the slicer.
+ * Issues without a `PRD:` marker are silently excluded from auto-slicing.
+ */
+
 /** Injectable dependencies for the daemon loop — enables unit testing. */
 export interface DaemonDeps {
   /** Drive the track one full tick to a fixpoint or park. */
@@ -50,6 +63,49 @@ export interface DaemonDeps {
    * `trackId` is provided to `runDaemon`.
    */
   listTrackingParentsFn?: (config: FlowdConfig) => Promise<number[]>;
+  /**
+   * List `needs-slicing` parents that have a `PRD: <path>` body marker
+   * (see PRD-location convention above).  Each entry carries the parsed PRD
+   * path.  Issues without the marker are excluded by the implementation.
+   * Called each cycle when both this and `sliceFn` are provided.
+   * Absent → phase A is skipped.  Throwing → treated as a transient error.
+   */
+  listNeedsSlicingFn?: (config: FlowdConfig) => Promise<{ id: number; prdPath: string }[]>;
+  /**
+   * Drive a `needs-slicing` parent through T12 (auto-slice) + T13/T14
+   * (plan gate).  Maps to `runPlan({ issue, prdPath, config })`.
+   * Called once per item returned by `listNeedsSlicingFn`.
+   * Absent → phase A is skipped even when `listNeedsSlicingFn` is provided.
+   */
+  sliceFn?: (config: FlowdConfig, trackId: number, prdPath: string) => Promise<void>;
+  /**
+   * List `needs-plan-review` parents that have a `PRD: <path>` body marker.
+   * Called each cycle when both this and `planFn` are provided.
+   * Absent → phase B is skipped.  Throwing → treated as a transient error.
+   */
+  listNeedsPlanReviewFn?: (config: FlowdConfig) => Promise<{ id: number; prdPath: string }[]>;
+  /**
+   * Drive a `needs-plan-review` parent through T13/T14 (plan gate, idempotent
+   * re-run).  Maps to `runPlan({ issue, prdPath, config })`.
+   * Called once per item returned by `listNeedsPlanReviewFn`.
+   * Absent → phase B is skipped even when `listNeedsPlanReviewFn` is provided.
+   */
+  planFn?: (config: FlowdConfig, trackId: number, prdPath: string) => Promise<void>;
+  /**
+   * List tracking parents whose every non-acceptance slice is closed —
+   * i.e. the track is complete and ready for the A1 accept-stage.
+   * Called each cycle when both this and `acceptFn` are provided.
+   * Absent → phase D is skipped.  Throwing → treated as a transient error.
+   */
+  listAcceptReadyFn?: (config: FlowdConfig) => Promise<number[]>;
+  /**
+   * Open/update the track→main PR for a completed track (A1 accept-stage,
+   * SPEC §5.5).  Maps to `acceptTrack({ track, config })`.
+   * Called once per item returned by `listAcceptReadyFn`.
+   * Never merges main (invariant #1) — that authority rests with the human.
+   * Absent → phase D is skipped even when `listAcceptReadyFn` is provided.
+   */
+  acceptFn?: (config: FlowdConfig, trackId: number) => Promise<void>;
   /**
    * Write a heartbeat object to the given path.
    * Failures are swallowed by the loop — never fatal.
@@ -173,6 +229,10 @@ export async function runDaemon(
       // ── Derive track IDs for this cycle ───────────────────────────────────
       // Single-track override: trackId arg is defined → always [trackId].
       // All-tracks mode: derive from listTrackingParentsFn each cycle.
+      //
+      // cycleAborted: set to true on any listing or dispatch error so
+      // subsequent phases are skipped and the cycle sleeps with backoff.
+      let cycleAborted = false;
       let trackIds: number[];
       if (trackId !== undefined) {
         trackIds = [trackId];
@@ -227,14 +287,234 @@ export async function runDaemon(
             backoffMs,
           });
           trackIds = []; // skip track loop this cycle
+          cycleAborted = true; // skip new phases too
         }
       } else {
         trackIds = [];
       }
 
+      // ── Phase A: needs-slicing → T12 (slicer) + T13/T14 (plan gate) ───────
+      // Lists `needs-slicing` parents with a PRD: body marker each cycle and
+      // calls sliceFn (→ runPlan) for each.  Idempotent: re-running at any
+      // reached state is a no-op inside runPlan (SPEC §8.8).
+      let slicingItems: { id: number; prdPath: string }[] = [];
+      if (!cycleAborted && deps.listNeedsSlicingFn !== undefined) {
+        try {
+          slicingItems = await deps.listNeedsSlicingFn(config);
+          // Listing succeeded — reset backoff so a subsequent per-item
+          // transient error starts a fresh backoff sequence rather than
+          // compounding with a stale value from a previous cycle.
+          consecutiveErrors = 0;
+          backoffMs = 0;
+        } catch (err) {
+          consecutiveErrors++;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const kind = classifyError(err);
+          if (kind === "fatal") {
+            const activity = `halted: ${errMsg}`;
+            log({
+              ts: new Date(tickStart).toISOString(),
+              outcome: "halted",
+              consecutiveErrors,
+              error: errMsg,
+              message: `\ud83d\udc80 FATAL: ${errMsg} \u2014 daemon halted`,
+            });
+            await writeHeartbeat(
+              {
+                lastTickAt: new Date(now()).toISOString(),
+                activity,
+                consecutiveErrors,
+                status: "halted",
+                pid: process.pid,
+              },
+              heartbeatPath,
+            ).catch(() => {});
+            haltedForFatal = true;
+            exitFn(1);
+            return;
+          }
+          cycleActivity = `error: ${errMsg}`;
+          cycleStatus = "degraded";
+          backoffMs = backoffMs === 0 ? backoffBaseMs : Math.min(backoffMs * 2, backoffMaxMs);
+          sleepDuration = backoffMs;
+          log({
+            ts: new Date(tickStart).toISOString(),
+            outcome: "degraded",
+            consecutiveErrors,
+            error: cycleActivity,
+            backoffMs,
+          });
+          cycleAborted = true;
+        }
+      }
+      if (!cycleAborted && deps.sliceFn !== undefined) {
+        for (const item of slicingItems) {
+          if (stopping || cycleAborted) break;
+          try {
+            await deps.sliceFn(config, item.id, item.prdPath);
+            consecutiveErrors = 0;
+            backoffMs = 0;
+            cycleActivity = `slice #${item.id}`;
+            cycleStatus = "ok";
+            log({ ts: new Date(tickStart).toISOString(), track: item.id, action: "slice" });
+          } catch (err) {
+            consecutiveErrors++;
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const kind = classifyError(err);
+            if (kind === "fatal") {
+              const activity = `halted: ${errMsg}`;
+              log({
+                ts: new Date(tickStart).toISOString(),
+                track: item.id,
+                outcome: "halted",
+                consecutiveErrors,
+                error: errMsg,
+                message: `\ud83d\udc80 FATAL: ${errMsg} \u2014 daemon halted`,
+              });
+              await writeHeartbeat(
+                {
+                  lastTickAt: new Date(now()).toISOString(),
+                  activity,
+                  consecutiveErrors,
+                  status: "halted",
+                  pid: process.pid,
+                },
+                heartbeatPath,
+              ).catch(() => {});
+              haltedForFatal = true;
+              exitFn(1);
+              return;
+            }
+            cycleActivity = `error: ${errMsg}`;
+            cycleStatus = "degraded";
+            backoffMs = backoffMs === 0 ? backoffBaseMs : Math.min(backoffMs * 2, backoffMaxMs);
+            sleepDuration = backoffMs;
+            log({
+              ts: new Date(tickStart).toISOString(),
+              track: item.id,
+              outcome: "degraded",
+              consecutiveErrors,
+              error: cycleActivity,
+              backoffMs,
+            });
+            cycleAborted = true;
+            break;
+          }
+        }
+      }
+
+      // ── Phase B: needs-plan-review → T13/T14 (plan gate, idempotent) ───────
+      // Lists `needs-plan-review` parents with a PRD: body marker each cycle
+      // and calls planFn (→ runPlan, idempotent re-run) for each.
+      let planReviewItems: { id: number; prdPath: string }[] = [];
+      if (!cycleAborted && deps.listNeedsPlanReviewFn !== undefined) {
+        try {
+          planReviewItems = await deps.listNeedsPlanReviewFn(config);
+          // Listing succeeded — reset backoff (same recovery-point logic as
+          // Phase A and the Phase C listTrackingParentsFn reset).
+          consecutiveErrors = 0;
+          backoffMs = 0;
+        } catch (err) {
+          consecutiveErrors++;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const kind = classifyError(err);
+          if (kind === "fatal") {
+            const activity = `halted: ${errMsg}`;
+            log({
+              ts: new Date(tickStart).toISOString(),
+              outcome: "halted",
+              consecutiveErrors,
+              error: errMsg,
+              message: `\ud83d\udc80 FATAL: ${errMsg} \u2014 daemon halted`,
+            });
+            await writeHeartbeat(
+              {
+                lastTickAt: new Date(now()).toISOString(),
+                activity,
+                consecutiveErrors,
+                status: "halted",
+                pid: process.pid,
+              },
+              heartbeatPath,
+            ).catch(() => {});
+            haltedForFatal = true;
+            exitFn(1);
+            return;
+          }
+          cycleActivity = `error: ${errMsg}`;
+          cycleStatus = "degraded";
+          backoffMs = backoffMs === 0 ? backoffBaseMs : Math.min(backoffMs * 2, backoffMaxMs);
+          sleepDuration = backoffMs;
+          log({
+            ts: new Date(tickStart).toISOString(),
+            outcome: "degraded",
+            consecutiveErrors,
+            error: cycleActivity,
+            backoffMs,
+          });
+          cycleAborted = true;
+        }
+      }
+      if (!cycleAborted && deps.planFn !== undefined) {
+        for (const item of planReviewItems) {
+          if (stopping || cycleAborted) break;
+          try {
+            await deps.planFn(config, item.id, item.prdPath);
+            consecutiveErrors = 0;
+            backoffMs = 0;
+            cycleActivity = `plan-gate #${item.id}`;
+            cycleStatus = "ok";
+            log({ ts: new Date(tickStart).toISOString(), track: item.id, action: "plan-gate" });
+          } catch (err) {
+            consecutiveErrors++;
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const kind = classifyError(err);
+            if (kind === "fatal") {
+              const activity = `halted: ${errMsg}`;
+              log({
+                ts: new Date(tickStart).toISOString(),
+                track: item.id,
+                outcome: "halted",
+                consecutiveErrors,
+                error: errMsg,
+                message: `\ud83d\udc80 FATAL: ${errMsg} \u2014 daemon halted`,
+              });
+              await writeHeartbeat(
+                {
+                  lastTickAt: new Date(now()).toISOString(),
+                  activity,
+                  consecutiveErrors,
+                  status: "halted",
+                  pid: process.pid,
+                },
+                heartbeatPath,
+              ).catch(() => {});
+              haltedForFatal = true;
+              exitFn(1);
+              return;
+            }
+            cycleActivity = `error: ${errMsg}`;
+            cycleStatus = "degraded";
+            backoffMs = backoffMs === 0 ? backoffBaseMs : Math.min(backoffMs * 2, backoffMaxMs);
+            sleepDuration = backoffMs;
+            log({
+              ts: new Date(tickStart).toISOString(),
+              track: item.id,
+              outcome: "degraded",
+              consecutiveErrors,
+              error: cycleActivity,
+              backoffMs,
+            });
+            cycleAborted = true;
+            break;
+          }
+        }
+      }
+
+      // ── Phase C: tracking → build loop (existing) ─────────────────────────
       // ── Drive each track to fixpoint/park sequentially ────────────────────
       for (const tid of trackIds) {
-        if (stopping) break;
+        if (stopping || cycleAborted) break;
 
         try {
           const result = await tickFn(config, tid);
@@ -334,7 +614,117 @@ export async function runDaemon(
             error: activity,
             backoffMs,
           });
+          cycleAborted = true; // skip Phase D (accept) this cycle
           break; // stop processing further tracks in this cycle
+        }
+      }
+
+      // ── Phase D: accept-ready → A1 (accept stage) ──────────────────────────
+      // Lists tracking parents whose non-acceptance slices are all closed and
+      // calls acceptFn (→ acceptTrack) to open/update the track→main PR.
+      // Never merges main (invariant #1) — merge authority rests with the human.
+      let acceptReadyIds: number[] = [];
+      if (!cycleAborted && deps.listAcceptReadyFn !== undefined) {
+        try {
+          acceptReadyIds = await deps.listAcceptReadyFn(config);
+          // Listing succeeded — reset backoff (same recovery-point logic as
+          // Phases A, B, and C).
+          consecutiveErrors = 0;
+          backoffMs = 0;
+        } catch (err) {
+          consecutiveErrors++;
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const kind = classifyError(err);
+          if (kind === "fatal") {
+            const activity = `halted: ${errMsg}`;
+            log({
+              ts: new Date(tickStart).toISOString(),
+              outcome: "halted",
+              consecutiveErrors,
+              error: errMsg,
+              message: `\ud83d\udc80 FATAL: ${errMsg} \u2014 daemon halted`,
+            });
+            await writeHeartbeat(
+              {
+                lastTickAt: new Date(now()).toISOString(),
+                activity,
+                consecutiveErrors,
+                status: "halted",
+                pid: process.pid,
+              },
+              heartbeatPath,
+            ).catch(() => {});
+            haltedForFatal = true;
+            exitFn(1);
+            return;
+          }
+          cycleActivity = `error: ${errMsg}`;
+          cycleStatus = "degraded";
+          backoffMs = backoffMs === 0 ? backoffBaseMs : Math.min(backoffMs * 2, backoffMaxMs);
+          sleepDuration = backoffMs;
+          log({
+            ts: new Date(tickStart).toISOString(),
+            outcome: "degraded",
+            consecutiveErrors,
+            error: cycleActivity,
+            backoffMs,
+          });
+          cycleAborted = true;
+        }
+      }
+      if (!cycleAborted && deps.acceptFn !== undefined) {
+        for (const tid of acceptReadyIds) {
+          if (stopping || cycleAborted) break;
+          try {
+            await deps.acceptFn(config, tid);
+            consecutiveErrors = 0;
+            backoffMs = 0;
+            cycleActivity = `accept #${tid}`;
+            cycleStatus = "ok";
+            log({ ts: new Date(tickStart).toISOString(), track: tid, action: "accept" });
+          } catch (err) {
+            consecutiveErrors++;
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const kind = classifyError(err);
+            if (kind === "fatal") {
+              const activity = `halted: ${errMsg}`;
+              log({
+                ts: new Date(tickStart).toISOString(),
+                track: tid,
+                outcome: "halted",
+                consecutiveErrors,
+                error: errMsg,
+                message: `\ud83d\udc80 FATAL: ${errMsg} \u2014 daemon halted`,
+              });
+              await writeHeartbeat(
+                {
+                  lastTickAt: new Date(now()).toISOString(),
+                  activity,
+                  consecutiveErrors,
+                  status: "halted",
+                  pid: process.pid,
+                },
+                heartbeatPath,
+              ).catch(() => {});
+              haltedForFatal = true;
+              exitFn(1);
+              return;
+            }
+            cycleActivity = `error: ${errMsg}`;
+            cycleStatus = "degraded";
+            backoffMs = backoffMs === 0 ? backoffBaseMs : Math.min(backoffMs * 2, backoffMaxMs);
+            sleepDuration = backoffMs;
+            log({
+              ts: new Date(tickStart).toISOString(),
+              track: tid,
+              outcome: "degraded",
+              consecutiveErrors,
+              error: cycleActivity,
+              backoffMs,
+            });
+            cycleAborted = true;
+            break;
+          }
         }
       }
 

@@ -5,7 +5,9 @@ import {
   type AgentPort,
   type Effort,
   type OrchestratorPorts,
+  type Role,
   type RunResult,
+  type TrackerSlice,
   type VerifyGatePort,
   runPlanGate,
   runTrack,
@@ -248,6 +250,123 @@ export function estimateFlowCost(
   config: CostEstimatorConfig,
 ): string {
   return estimateTrackCost(slices, config).formatted;
+}
+
+/**
+ * Extract the PRD path from an issue body.
+ *
+ * Looks for a line matching `PRD: <path>` (case-sensitive prefix, leading
+ * whitespace stripped from the value).  Returns `null` when no such line
+ * exists.
+ *
+ * Convention (daemon T12 auto-slice): a `needs-slicing` or
+ * `needs-plan-review` parent's issue body must contain:
+ *
+ *   PRD: docs/prd/NNNN-title.md
+ *
+ * The path is relative to the repository root.  The daemon reads it each
+ * cycle; updating the line in the issue body re-points the slicer.
+ */
+export function parsePrdPath(body: string): string | null {
+  for (const line of body.split(/\r?\n/)) {
+    const m = line.match(/^PRD:\s*(.+)$/);
+    if (m?.[1]) return m[1].trim();
+  }
+  return null;
+}
+
+/**
+ * Minimal tracker interface required by the Phase A/B/D listing helpers.
+ * Satisfied by `GitHubTrackerAdapter`; exposed so tests can pass a fake
+ * without importing the real adapter (which needs live credentials).
+ */
+export interface ListingTracker {
+  listByRole(role: Role): Promise<number[]>;
+  getItemBody(id: number): Promise<string>;
+  listSlices(id: number): Promise<TrackerSlice[]>;
+}
+
+/**
+ * Build a tracker adapter wired only with read credentials (no workdir needed).
+ * Shared by the listing helpers below.
+ */
+async function makeTrackerAdapter(config: FlowdConfig): Promise<GitHubTrackerAdapter> {
+  const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  const forgeToken = await readForgeToken(credentials);
+  return new GitHubTrackerAdapter({
+    repo: config.repo,
+    trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
+  });
+}
+
+/**
+ * Return `needs-slicing` parents that have a `PRD: <path>` body marker.
+ * Issues without the marker are silently excluded.
+ * Used by the daemon's Phase A each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
+ */
+export async function listNeedsSlicingWithPrd(
+  config: FlowdConfig,
+  tracker?: ListingTracker,
+): Promise<{ id: number; prdPath: string }[]> {
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const ids = await t.listByRole("needs-slicing");
+  const result: { id: number; prdPath: string }[] = [];
+  for (const id of ids) {
+    const body = await t.getItemBody(id);
+    const prdPath = parsePrdPath(body);
+    if (prdPath !== null) result.push({ id, prdPath });
+  }
+  return result;
+}
+
+/**
+ * Return `needs-plan-review` parents that have a `PRD: <path>` body marker.
+ * Issues without the marker are silently excluded.
+ * Used by the daemon's Phase B each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
+ */
+export async function listNeedsPlanReviewWithPrd(
+  config: FlowdConfig,
+  tracker?: ListingTracker,
+): Promise<{ id: number; prdPath: string }[]> {
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const ids = await t.listByRole("needs-plan-review");
+  const result: { id: number; prdPath: string }[] = [];
+  for (const id of ids) {
+    const body = await t.getItemBody(id);
+    const prdPath = parsePrdPath(body);
+    if (prdPath !== null) result.push({ id, prdPath });
+  }
+  return result;
+}
+
+/**
+ * Return the issue numbers of `tracking` parents whose every non-acceptance
+ * slice is closed (i.e. ready for the A1 accept-stage).
+ * Used by the daemon's Phase D each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
+ */
+export async function listAcceptReady(
+  config: FlowdConfig,
+  tracker?: ListingTracker,
+): Promise<number[]> {
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const trackingIds = await t.listByRole("tracking");
+  const ready: number[] = [];
+  for (const id of trackingIds) {
+    const slices = await t.listSlices(id);
+    const nonAcceptance = slices.filter((s) => s.role !== "needs-acceptance");
+    if (nonAcceptance.every((s) => s.closed)) ready.push(id);
+  }
+  return ready;
 }
 
 /**

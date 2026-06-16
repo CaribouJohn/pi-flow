@@ -6,7 +6,13 @@ import { runDaemon, writeHeartbeatToPath } from "./daemon.ts";
 import { acceptTrack } from "./flow-accept.ts";
 import { runPlan } from "./flow-plan.ts";
 import { rejectTrack } from "./flow-reject.ts";
-import { listTrackingParents, runFlow } from "./flow-run.ts";
+import {
+  listAcceptReady,
+  listNeedsPlanReviewWithPrd,
+  listNeedsSlicingWithPrd,
+  listTrackingParents,
+  runFlow,
+} from "./flow-run.ts";
 import { runStatus } from "./status.ts";
 
 const plan = planInvocation(process.argv.slice(2));
@@ -85,6 +91,12 @@ try {
     await runDaemon(config, plan.track, {
       tickFn: runFlow,
       listTrackingParentsFn: listTrackingParents,
+      listNeedsSlicingFn: listNeedsSlicingWithPrd,
+      sliceFn: (cfg, id, prdPath) => runPlan({ issue: id, prdPath, config: cfg }).then(() => {}),
+      listNeedsPlanReviewFn: listNeedsPlanReviewWithPrd,
+      planFn: (cfg, id, prdPath) => runPlan({ issue: id, prdPath, config: cfg }).then(() => {}),
+      listAcceptReadyFn: listAcceptReady,
+      acceptFn: (cfg, id) => acceptTrack({ track: id, config: cfg }).then(() => {}),
       writeHeartbeat: writeHeartbeatToPath,
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       now: () => Date.now(),
