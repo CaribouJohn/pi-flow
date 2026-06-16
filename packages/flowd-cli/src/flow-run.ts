@@ -5,7 +5,9 @@ import {
   type AgentPort,
   type Effort,
   type OrchestratorPorts,
+  type Role,
   type RunResult,
+  type TrackerSlice,
   type VerifyGatePort,
   runPlanGate,
   runTrack,
@@ -18,7 +20,7 @@ import { type CredentialStore, FileCredentialStore } from "./credentials.ts";
 import { scrubProviderEnvKeys } from "./env-scrub.ts";
 import { makeForgeGhRunner, makeForgeRunner, readForgeToken } from "./forge-auth.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
-import { GitHubTrackerAdapter } from "./github-tracker.ts";
+import { GitHubTrackerAdapter, parseTrackBranch } from "./github-tracker.ts";
 import { PiImplementer } from "./pi-implementer.ts";
 import { PiPlanReviewer } from "./pi-plan-reviewer.ts";
 import { PiReviewer } from "./pi-reviewer.ts";
@@ -126,11 +128,21 @@ export function makeCommitHistoryToTrack(
   };
 }
 
-/** Compose the real adapters into the engine's ports. */
+/**
+ * Compose the real adapters into the engine's ports.
+ *
+ * `trackBranch` must be the **resolved** track branch for the driven track,
+ * obtained via `resolveTrackBranch()` (reads the `Track-branch:` marker from
+ * the parent body; falls back to `config.trackBranch`).  This ensures
+ * `PiImplementer.hasCommitsAhead` and `makeCommitHistoryToTrack` operate on
+ * the correct branch for every track in all-tracks mode.
+ */
+
 export function buildPorts(
   config: FlowdConfig,
   credentials: CredentialStore,
   forgeToken: string,
+  trackBranch: string,
 ): OrchestratorPorts {
   const tracker = new GitHubTrackerAdapter({
     repo: config.repo,
@@ -146,7 +158,7 @@ export function buildPorts(
   const implementer = new PiImplementer({
     repo: config.repo,
     workdir: config.workdir,
-    trackBranch: config.trackBranch,
+    trackBranch,
     verifyCommand: config.verifyCommand,
     model: config.models.implement,
     credentials,
@@ -182,7 +194,7 @@ export function buildPorts(
           aiDisclaimer: config.aiDisclaimer,
           commitHistoryToTrack: makeCommitHistoryToTrack(
             config.workdir,
-            config.trackBranch,
+            trackBranch,
             config.costMeter.historyPath,
             config.actor,
             forgeToken,
@@ -239,6 +251,158 @@ export function estimateFlowCost(
   return estimateTrackCost(slices, config).formatted;
 }
 
+/**
+ * Extract the PRD path from an issue body.
+ *
+ * Looks for a line matching `PRD: <path>` (case-sensitive prefix, leading
+ * whitespace stripped from the value).  Returns `null` when no such line
+ * exists.
+ *
+ * Convention (daemon T12 auto-slice): a `needs-slicing` or
+ * `needs-plan-review` parent's issue body must contain:
+ *
+ *   PRD: docs/prd/NNNN-title.md
+ *
+ * The path is relative to the repository root.  The daemon reads it each
+ * cycle; updating the line in the issue body re-points the slicer.
+ */
+/**
+ * Resolve a track's git branch from its parent issue body.
+ *
+ * Reads the `Track-branch: <branch>` marker written by the plan gate (T13
+ * clear path).  Falls back to `fallback` (typically `config.trackBranch`)
+ * when the marker is absent — covers legacy parents and the very first
+ * `runFlow` tick of a `needs-plan-review` track before the gate fires.
+ *
+ * Exported for unit tests.
+ */
+export async function resolveTrackBranch(
+  trackId: number,
+  tracker: { getItemBody(id: number): Promise<string> },
+  fallback: string,
+): Promise<string> {
+  const body = await tracker.getItemBody(trackId);
+  return parseTrackBranch(body) ?? fallback;
+}
+
+export function parsePrdPath(body: string): string | null {
+  for (const line of body.split(/\r?\n/)) {
+    const m = line.match(/^PRD:\s*(.+)$/);
+    if (m?.[1]) return m[1].trim();
+  }
+  return null;
+}
+
+/**
+ * Minimal tracker interface required by the Phase A/B/D listing helpers.
+ * Satisfied by `GitHubTrackerAdapter`; exposed so tests can pass a fake
+ * without importing the real adapter (which needs live credentials).
+ */
+export interface ListingTracker {
+  listByRole(role: Role): Promise<number[]>;
+  getItemBody(id: number): Promise<string>;
+  listSlices(id: number): Promise<TrackerSlice[]>;
+}
+
+/**
+ * Build a tracker adapter wired only with read credentials (no workdir needed).
+ * Shared by the listing helpers below.
+ */
+async function makeTrackerAdapter(config: FlowdConfig): Promise<GitHubTrackerAdapter> {
+  const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  const forgeToken = await readForgeToken(credentials);
+  return new GitHubTrackerAdapter({
+    repo: config.repo,
+    trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
+  });
+}
+
+/**
+ * Return `needs-slicing` parents that have a `PRD: <path>` body marker.
+ * Issues without the marker are silently excluded.
+ * Used by the daemon's Phase A each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
+ */
+export async function listNeedsSlicingWithPrd(
+  config: FlowdConfig,
+  tracker?: ListingTracker,
+): Promise<{ id: number; prdPath: string }[]> {
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const ids = await t.listByRole("needs-slicing");
+  const result: { id: number; prdPath: string }[] = [];
+  for (const id of ids) {
+    const body = await t.getItemBody(id);
+    const prdPath = parsePrdPath(body);
+    if (prdPath !== null) result.push({ id, prdPath });
+  }
+  return result;
+}
+
+/**
+ * Return `needs-plan-review` parents that have a `PRD: <path>` body marker.
+ * Issues without the marker are silently excluded.
+ * Used by the daemon's Phase B each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
+ */
+export async function listNeedsPlanReviewWithPrd(
+  config: FlowdConfig,
+  tracker?: ListingTracker,
+): Promise<{ id: number; prdPath: string }[]> {
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const ids = await t.listByRole("needs-plan-review");
+  const result: { id: number; prdPath: string }[] = [];
+  for (const id of ids) {
+    const body = await t.getItemBody(id);
+    const prdPath = parsePrdPath(body);
+    if (prdPath !== null) result.push({ id, prdPath });
+  }
+  return result;
+}
+
+/**
+ * Return the issue numbers of `tracking` parents whose every non-acceptance
+ * slice is closed (i.e. ready for the A1 accept-stage).
+ * Used by the daemon's Phase D each cycle (PRD-0005 §3).
+ *
+ * An optional `tracker` can be injected for unit tests; production callers
+ * omit it and the real `GitHubTrackerAdapter` is built from `config`.
+ */
+export async function listAcceptReady(
+  config: FlowdConfig,
+  tracker?: ListingTracker,
+): Promise<number[]> {
+  const t = tracker ?? (await makeTrackerAdapter(config));
+  const trackingIds = await t.listByRole("tracking");
+  const ready: number[] = [];
+  for (const id of trackingIds) {
+    const slices = await t.listSlices(id);
+    const nonAcceptance = slices.filter((s) => s.role !== "needs-acceptance");
+    if (nonAcceptance.every((s) => s.closed)) ready.push(id);
+  }
+  return ready;
+}
+
+/**
+ * Return the issue numbers of all open `tracking` parents in the repo.
+ * Used by the daemon's all-tracks mode (PRD-0005 §3) to derive the cycle's
+ * work list each iteration.
+ */
+export async function listTrackingParents(config: FlowdConfig): Promise<number[]> {
+  const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  const forgeToken = await readForgeToken(credentials);
+  const tracker = new GitHubTrackerAdapter({
+    repo: config.repo,
+    trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
+  });
+  return tracker.listByRole("tracking");
+}
+
 /** Drive one track's slice loop (S0–S8) to a fixpoint with the real adapters. */
 export async function runFlow(config: FlowdConfig, trackId: number): Promise<RunResult> {
   // Use only credential-store keys, never ambient env (ADR-0029).
@@ -254,7 +418,18 @@ export async function runFlow(config: FlowdConfig, trackId: number): Promise<Run
   assertWorkdirIsolated(workdir, process.cwd());
   const resolved: FlowdConfig = { ...config, workdir };
   await ensureWorkdir(resolved.repo, workdir);
-  const ports = buildPorts(resolved, credentials, forgeToken);
+  // Resolve the track branch from the parent's `Track-branch:` marker (written
+  // by the plan gate on T13 clear).  Falls back to config.trackBranch for
+  // legacy parents (e.g. #106) and for the first tick of a needs-plan-review
+  // track before the plan gate has fired.  A temp tracker is built here so the
+  // resolution happens before buildPorts, which needs the branch up front for
+  // PiImplementer and makeCommitHistoryToTrack.
+  const tempTracker = new GitHubTrackerAdapter({
+    repo: resolved.repo,
+    run: makeForgeGhRunner(forgeToken),
+  });
+  const trackBranch = await resolveTrackBranch(trackId, tempTracker, config.trackBranch);
+  const ports = buildPorts(resolved, credentials, forgeToken, trackBranch);
 
   const opts = {
     reviewerIterationCap: config.reviewerIterationCap,

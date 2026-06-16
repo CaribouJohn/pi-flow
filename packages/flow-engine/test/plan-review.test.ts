@@ -261,6 +261,49 @@ describe("runPlanGate — clear path (T13)", () => {
     expect(flow.counts.roleChanges).toEqual([{ id: 1, role: "tracking" }]);
   });
 
+  test("writes Track-branch marker to parent body on T13 clear", async () => {
+    const flow = makeFakeFlow({
+      trackRole: "needs-plan-review",
+      trackBranch: "track/0005-continuous-daemon",
+      slices: [{ id: 10, effort: "low" }],
+      planReviewVerdict: {
+        decision: "CLEAR",
+        risks: [],
+        childAgentReady: { 10: { pass: true } },
+      },
+    });
+
+    await runPlanGate(flow.ports, 1, OPTS);
+
+    const body = await flow.ports.tracker.getItemBody(1);
+    expect(body).toContain("Track-branch: track/0005-continuous-daemon");
+    // The body update must be recorded
+    expect(flow.counts.bodyUpdates.length).toBe(1);
+    expect(flow.counts.bodyUpdates[0]?.body).toContain(
+      "Track-branch: track/0005-continuous-daemon",
+    );
+  });
+
+  test("does not duplicate Track-branch marker when already present (idempotent re-run)", async () => {
+    // Simulate a partial re-run: body already has the marker
+    const flow = makeFakeFlow({
+      trackRole: "needs-plan-review",
+      trackBranch: "track/my-feature",
+      slices: [{ id: 10, effort: "low" }],
+      planReviewVerdict: {
+        decision: "CLEAR",
+        risks: [],
+        childAgentReady: { 10: { pass: true } },
+      },
+      parentBody: "PRD: docs/prd/test.md\n\nTrack-branch: track/my-feature\n",
+    });
+
+    await runPlanGate(flow.ports, 1, OPTS);
+
+    // updateBody must NOT be called when the marker is already there
+    expect(flow.counts.bodyUpdates).toEqual([]);
+  });
+
   test("posts a clearance marker comment with the track branch name", async () => {
     const flow = makeFakeFlow({
       trackRole: "needs-plan-review",

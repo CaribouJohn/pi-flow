@@ -182,3 +182,45 @@ describe("planInvocation", () => {
     });
   });
 });
+
+// ── daemon command ────────────────────────────────────────────────────────────
+
+describe("planInvocation — daemon", () => {
+  test("valid daemon invocation", () => {
+    expect(planInvocation(["daemon", "--track", "3"])).toEqual({
+      kind: "daemon",
+      track: 3,
+      config: undefined,
+    });
+  });
+
+  test("daemon with --config", () => {
+    expect(planInvocation(["daemon", "--track", "3", "--config", "c.json"])).toEqual({
+      kind: "daemon",
+      track: 3,
+      config: "c.json",
+    });
+  });
+
+  test("daemon without --track runs in all-tracks mode (not a usage error)", () => {
+    expect(planInvocation(["daemon"])).toEqual({
+      kind: "daemon",
+      track: undefined,
+      config: undefined,
+    });
+  });
+
+  test("daemon: non-numeric --track is a usage error", () => {
+    expect(planInvocation(["daemon", "--track", "abc"])).toMatchObject({
+      kind: "usage",
+      code: 2,
+    });
+  });
+
+  test("daemon: zero --track is a usage error", () => {
+    expect(planInvocation(["daemon", "--track", "0"])).toMatchObject({
+      kind: "usage",
+      code: 2,
+    });
+  });
+});

@@ -48,14 +48,19 @@ interface GhIssue {
 
 export interface GitHubTrackerOptions {
   repo: string;
-  /** The track branch (a git concept the tracker can't derive; supplied here). */
-  trackBranch: string;
+  /**
+   * Fallback branch used by `getTrack()` when the parent issue body contains no
+   * `Track-branch: <slug>` marker.  Set to `config.trackBranch` in production.
+   * When absent *and* no marker is present in the body the tracker falls back to
+   * `track/<trackId>` so legacy / single-track callers keep working.
+   */
+  trackBranch?: string;
   run?: GhRunner;
 }
 
 export class GitHubTrackerAdapter implements TrackerPort {
   private readonly repo: string;
-  private readonly trackBranch: string;
+  private readonly trackBranch: string | undefined;
   private readonly run: GhRunner;
 
   constructor(opts: GitHubTrackerOptions) {
@@ -65,12 +70,8 @@ export class GitHubTrackerAdapter implements TrackerPort {
   }
 
   async getTrack(trackId: number): Promise<Track> {
-    const role = await this.getParentRole(trackId);
-    return { id: trackId, branch: this.trackBranch, role };
-  }
-
-  /** Read the parent issue's role label. */
-  private async getParentRole(trackId: number): Promise<Role> {
+    // Fetch both labels and body in one call — role comes from labels, branch
+    // from the `Track-branch: <slug>` marker written by the plan gate (T13).
     const out = await this.run([
       "issue",
       "view",
@@ -78,10 +79,33 @@ export class GitHubTrackerAdapter implements TrackerPort {
       "--repo",
       this.repo,
       "--json",
-      "labels",
+      "labels,body",
     ]);
-    const labels = (JSON.parse(out) as { labels: { name: string }[] }).labels.map((l) => l.name);
-    return parseRole(labels) ?? "needs-triage";
+    const data = JSON.parse(out) as { labels: { name: string }[]; body: string | null };
+    const labels = data.labels.map((l) => l.name);
+    const role = parseRole(labels) ?? "needs-triage";
+    // Resolution order: body marker → opts.trackBranch (config fallback) → legacy track/<id>.
+    const branch = parseTrackBranch(data.body ?? "") ?? this.trackBranch ?? `track/${trackId}`;
+    return { id: trackId, branch, role };
+  }
+
+  async listByRole(role: Role): Promise<number[]> {
+    const out = await this.run([
+      "issue",
+      "list",
+      "--repo",
+      this.repo,
+      "--state",
+      "open",
+      "--label",
+      role,
+      "--limit",
+      "200",
+      "--json",
+      "number",
+    ]);
+    const issues = JSON.parse(out) as { number: number }[];
+    return issues.map((i) => i.number);
   }
 
   async listSlices(trackId: number): Promise<TrackerSlice[]> {
@@ -162,6 +186,10 @@ export class GitHubTrackerAdapter implements TrackerPort {
     return (JSON.parse(out) as { body: string | null }).body ?? "";
   }
 
+  async updateBody(itemId: number, body: string): Promise<void> {
+    await this.run(["issue", "edit", String(itemId), "--repo", this.repo, "--body", body]);
+  }
+
   async setRole(itemId: number, role: Role): Promise<void> {
     // Remove all existing role labels, then add the target. A remove can fail
     // simply because the label isn't present (expected) — but it can also fail
@@ -188,6 +216,20 @@ export class GitHubTrackerAdapter implements TrackerPort {
 }
 
 // --- pure parsers (unit-tested directly) ---
+
+/**
+ * Parse the `Track-branch: <branch>` marker from an issue body.
+ * Written by the plan gate (T13 clear path) so that `runFlow` and the daemon
+ * can resolve the real track branch without deriving it from the trackId.
+ * Returns `null` when the marker is absent.
+ */
+export function parseTrackBranch(body: string): string | null {
+  for (const line of body.split(/\r?\n/)) {
+    const m = line.match(/^Track-branch:\s*(.+)$/);
+    if (m?.[1]) return m[1].trim();
+  }
+  return null;
+}
 
 /** Parse the issue number from `gh issue create` output (the trailing issue URL). */
 export function parseIssueNumber(ghCreateOutput: string): number {

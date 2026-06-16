@@ -2,10 +2,18 @@
 import { readCostRecordsFromGit, runCalibrate, runCalibrateFromRecords } from "./calibrate.ts";
 import { planInvocation } from "./cli.ts";
 import { loadConfig } from "./config.ts";
+import { runDaemon, writeHeartbeatToPath } from "./daemon.ts";
 import { acceptTrack } from "./flow-accept.ts";
 import { runPlan } from "./flow-plan.ts";
 import { rejectTrack } from "./flow-reject.ts";
-import { runFlow } from "./flow-run.ts";
+import {
+  listAcceptReady,
+  listNeedsPlanReviewWithPrd,
+  listNeedsSlicingWithPrd,
+  listTrackingParents,
+  runFlow,
+} from "./flow-run.ts";
+import { runStatus } from "./status.ts";
 
 const plan = planInvocation(process.argv.slice(2));
 if (plan.kind === "usage") {
@@ -77,6 +85,34 @@ try {
     }
     if (result.costEstimate) console.log(`cost: ${result.costEstimate}`);
     process.exit(result.gate === "clear" ? 0 : 1);
+  }
+
+  if (plan.kind === "daemon") {
+    await runDaemon(config, plan.track, {
+      tickFn: runFlow,
+      listTrackingParentsFn: listTrackingParents,
+      listNeedsSlicingFn: listNeedsSlicingWithPrd,
+      sliceFn: (cfg, id, prdPath) => runPlan({ issue: id, prdPath, config: cfg }).then(() => {}),
+      listNeedsPlanReviewFn: listNeedsPlanReviewWithPrd,
+      planFn: (cfg, id, prdPath) => runPlan({ issue: id, prdPath, config: cfg }).then(() => {}),
+      listAcceptReadyFn: listAcceptReady,
+      acceptFn: (cfg, id) => acceptTrack({ track: id, config: cfg }).then(() => {}),
+      writeHeartbeat: writeHeartbeatToPath,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.now(),
+    });
+    process.exit(0);
+  }
+
+  if (plan.kind === "status") {
+    const summary = await runStatus({
+      repo: config.repo,
+      workdir: config.workdir,
+      defaultBranch: config.defaultBranch,
+      credentialsPath: config.credentialsPath,
+    });
+    console.log(summary);
+    process.exit(0);
   }
 
   // plan.kind === "run"

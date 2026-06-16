@@ -66,6 +66,11 @@ export interface FakeConfig {
   mainProtection?: MainProtection;
   /** Pre-existing track→main PR (for A1 idempotent re-run tests). */
   trackPr?: PullRequest | null;
+  /**
+   * Initial body of the parent track item.  Defaults to a minimal PRD marker
+   * so `getItemBody(trackId)` always succeeds (plan gate reads it on T13 clear).
+   */
+  parentBody?: string;
 }
 
 interface Rec {
@@ -113,6 +118,8 @@ export interface FakeFlow {
     openedTrackPr: { head: string; base: string; title: string; body: string }[];
     /** PR body updates via updatePrBody (A1 re-run). */
     updatedPrBodies: { prNumber: number; newBody: string }[];
+    /** Body updates via updateBody: (itemId, body). */
+    bodyUpdates: { id: number; body: string }[];
   };
 }
 
@@ -124,6 +131,10 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     branch: config.trackBranch ?? "track/test",
     role: config.trackRole ?? "tracking",
   };
+
+  // Parent item body — writable by updateBody (used by plan gate to persist
+  // the Track-branch marker on T13 clear).  Tests can inspect it via getItemBody.
+  let parentBody = config.parentBody ?? "PRD: docs/prd/test.md\n";
 
   const recs = new Map<number, Rec>(
     config.slices.map((s) => [
@@ -167,6 +178,7 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
     dependencyWrites: [],
     openedTrackPr: [],
     updatedPrBodies: [],
+    bodyUpdates: [],
   };
   let prCounter = 100;
 
@@ -237,7 +249,19 @@ export function makeFakeFlow(config: FakeConfig): FakeFlow {
       counts.dependencyWrites.push({ id: itemId, dependsOn: [...dependsOn] });
     },
     getItemBody: async (itemId) => {
+      if (itemId === track.id) return parentBody;
       return must(itemId).body;
+    },
+    updateBody: async (itemId, body) => {
+      counts.bodyUpdates.push({ id: itemId, body });
+      if (itemId === track.id) {
+        parentBody = body;
+      } else {
+        must(itemId).body = body;
+      }
+    },
+    listByRole: async (role) => {
+      return [...recs.values()].filter((r) => r.role === role && !r.closed).map((r) => r.id);
     },
   };
 
