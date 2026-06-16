@@ -22,6 +22,11 @@ import type {
 export interface TrackerPort {
   getTrack(trackId: number): Promise<Track>;
   listSlices(trackId: number): Promise<TrackerSlice[]>;
+  /**
+   * Return the issue numbers of all open items that carry the given role label.
+   * Used by the daemon to derive all `tracking` parents each cycle (PRD-0005 §3).
+   */
+  listByRole(role: Role): Promise<number[]>;
   /** Claim a slice — the in-progress lock (S1). */
   setAssignee(sliceId: number, who: string): Promise<void>;
   closeSlice(sliceId: number): Promise<void>;

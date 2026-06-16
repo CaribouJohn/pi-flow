@@ -6,7 +6,7 @@ import { runDaemon, writeHeartbeatToPath } from "./daemon.ts";
 import { acceptTrack } from "./flow-accept.ts";
 import { runPlan } from "./flow-plan.ts";
 import { rejectTrack } from "./flow-reject.ts";
-import { runFlow } from "./flow-run.ts";
+import { listTrackingParents, runFlow } from "./flow-run.ts";
 import { runStatus } from "./status.ts";
 
 const plan = planInvocation(process.argv.slice(2));
@@ -84,6 +84,7 @@ try {
   if (plan.kind === "daemon") {
     await runDaemon(config, plan.track, {
       tickFn: runFlow,
+      listTrackingParentsFn: listTrackingParents,
       writeHeartbeat: writeHeartbeatToPath,
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       now: () => Date.now(),

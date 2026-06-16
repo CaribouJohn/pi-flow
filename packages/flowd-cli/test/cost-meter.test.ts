@@ -79,6 +79,7 @@ function makeTracker(): TrackerPort & { comments: { id: number; body: string }[]
     createItem: async () => 0,
     setDependencies: async () => {},
     getItemBody: async () => "",
+    listByRole: async () => [],
   };
 }
 

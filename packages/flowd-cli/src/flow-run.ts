@@ -126,11 +126,22 @@ export function makeCommitHistoryToTrack(
   };
 }
 
-/** Compose the real adapters into the engine's ports. */
+/**
+ * Compose the real adapters into the engine's ports.
+ *
+ * `trackBranch` must be derived from the track being driven (e.g.
+ * `track/${trackId}`) so that `PiImplementer.hasCommitsAhead` checks against
+ * the correct base branch and `makeCommitHistoryToTrack` commits cost records
+ * to the right branch.  In single-track mode this is always `track/<id>`;
+ * in all-tracks mode each call to `runFlow` provides its own value.
+ * Do NOT pass `config.trackBranch` here — it is a static config value that
+ * will be wrong for every track except the one it was written for.
+ */
 export function buildPorts(
   config: FlowdConfig,
   credentials: CredentialStore,
   forgeToken: string,
+  trackBranch: string,
 ): OrchestratorPorts {
   const tracker = new GitHubTrackerAdapter({
     repo: config.repo,
@@ -146,7 +157,7 @@ export function buildPorts(
   const implementer = new PiImplementer({
     repo: config.repo,
     workdir: config.workdir,
-    trackBranch: config.trackBranch,
+    trackBranch,
     verifyCommand: config.verifyCommand,
     model: config.models.implement,
     credentials,
@@ -182,7 +193,7 @@ export function buildPorts(
           aiDisclaimer: config.aiDisclaimer,
           commitHistoryToTrack: makeCommitHistoryToTrack(
             config.workdir,
-            config.trackBranch,
+            trackBranch,
             config.costMeter.historyPath,
             config.actor,
             forgeToken,
@@ -239,6 +250,22 @@ export function estimateFlowCost(
   return estimateTrackCost(slices, config).formatted;
 }
 
+/**
+ * Return the issue numbers of all open `tracking` parents in the repo.
+ * Used by the daemon's all-tracks mode (PRD-0005 §3) to derive the cycle's
+ * work list each iteration.
+ */
+export async function listTrackingParents(config: FlowdConfig): Promise<number[]> {
+  const credentials = new FileCredentialStore(resolve(config.credentialsPath));
+  const forgeToken = await readForgeToken(credentials);
+  const tracker = new GitHubTrackerAdapter({
+    repo: config.repo,
+    trackBranch: config.trackBranch,
+    run: makeForgeGhRunner(forgeToken),
+  });
+  return tracker.listByRole("tracking");
+}
+
 /** Drive one track's slice loop (S0–S8) to a fixpoint with the real adapters. */
 export async function runFlow(config: FlowdConfig, trackId: number): Promise<RunResult> {
   // Use only credential-store keys, never ambient env (ADR-0029).
@@ -254,7 +281,12 @@ export async function runFlow(config: FlowdConfig, trackId: number): Promise<Run
   assertWorkdirIsolated(workdir, process.cwd());
   const resolved: FlowdConfig = { ...config, workdir };
   await ensureWorkdir(resolved.repo, workdir);
-  const ports = buildPorts(resolved, credentials, forgeToken);
+  // Derive the track branch from the trackId so each tracking parent uses its
+  // own git branch (e.g. track/5, track/10).  Passing config.trackBranch would
+  // be wrong in all-tracks mode because it is a single static value that only
+  // matches one of the N driven tracks.
+  const trackBranch = `track/${trackId}`;
+  const ports = buildPorts(resolved, credentials, forgeToken, trackBranch);
 
   const opts = {
     reviewerIterationCap: config.reviewerIterationCap,

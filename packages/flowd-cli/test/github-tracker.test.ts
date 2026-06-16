@@ -194,10 +194,18 @@ describe("GitHubTrackerAdapter", () => {
     });
   });
 
-  test("getTrack returns the configured track branch with the parent role", async () => {
+  test("getTrack derives the branch from trackId (track/<id>) and returns the parent role", async () => {
     const { run } = fakeRunner();
-    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
-    expect(await tracker.getTrack(1)).toEqual({ id: 1, branch: "track/x", role: "tracking" });
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", run });
+    expect(await tracker.getTrack(1)).toEqual({ id: 1, branch: "track/1", role: "tracking" });
+  });
+
+  test("getTrack uses trackId for branch — each tracking parent gets its own branch", async () => {
+    const { run } = fakeRunner();
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", run });
+    // Different trackIds → different branches (no inter-track conflict).
+    expect(await tracker.getTrack(5)).toMatchObject({ id: 5, branch: "track/5" });
+    expect(await tracker.getTrack(99)).toMatchObject({ id: 99, branch: "track/99" });
   });
 
   test("mutations call gh with the expected args", async () => {
@@ -244,5 +252,44 @@ describe("GitHubTrackerAdapter", () => {
       "--remove-label",
       "ready-for-agent",
     ]);
+  });
+});
+
+describe("GitHubTrackerAdapter — listByRole", () => {
+  test("returns issue numbers of open issues with the given label", async () => {
+    const calls: string[][] = [];
+    const run: GhRunner = async (args) => {
+      calls.push(args);
+      return JSON.stringify([{ number: 5 }, { number: 12 }, { number: 99 }]);
+    };
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
+    const ids = await tracker.listByRole("tracking");
+
+    expect(ids).toEqual([5, 12, 99]);
+    // Should filter by the given role label and state=open.
+    const listCall = calls.find((c) => c[1] === "list");
+    expect(listCall).toBeDefined();
+    expect(listCall).toContain("tracking");
+    expect(listCall).toContain("open");
+  });
+
+  test("returns empty array when no issues match", async () => {
+    const run: GhRunner = async () => JSON.stringify([]);
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
+    expect(await tracker.listByRole("ready-for-agent")).toEqual([]);
+  });
+
+  test("passes --limit 200 so the daemon sees all tracking parents (not just the first 30)", async () => {
+    const calls: string[][] = [];
+    const run: GhRunner = async (args) => {
+      calls.push(args);
+      return JSON.stringify([]);
+    };
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", run });
+    await tracker.listByRole("tracking");
+    const listCall = calls.find((c) => c[1] === "list");
+    expect(listCall).toBeDefined();
+    expect(listCall).toContain("--limit");
+    expect(listCall).toContain("200");
   });
 });
