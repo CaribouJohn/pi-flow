@@ -12,6 +12,7 @@
 import { readFile } from "node:fs/promises";
 import {
   type PullRequest,
+  type Role,
   type Slice,
   type World,
   isAssignable,
@@ -24,6 +25,72 @@ import { FileCredentialStore } from "./credentials.ts";
 import { makeForgeGhRunner, makeForgeRunner, readForgeToken } from "./forge-auth.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
 import { type GhRunner, GitHubTrackerAdapter } from "./github-tracker.ts";
+
+// ── §8.5 Human-bookend classifier ────────────────────────────────────────────
+
+/**
+ * Role-based human-bookend set (SPEC §8.5).
+ * Slices in any of these roles require human action before the agent can
+ * proceed.  `review:human` and plan-gate escalation (T14) are derived
+ * conditions checked separately in `classifyNeedsYou`.
+ */
+export const HUMAN_BOOKEND_ROLES = new Set<Role>([
+  "needs-triage",
+  "needs-grilling",
+  "ready-for-human",
+  "needs-acceptance",
+]);
+
+/** A single item surfaced by the NEEDS YOU classifier. */
+export interface NeedsYouItem {
+  /** Issue number (track parent or slice). */
+  id: number;
+  /** Issue title or display label. */
+  title: string;
+  /** Short human-readable reason (the role or derived condition). */
+  reason: string;
+}
+
+/**
+ * Classify all items in a World that are in human-bookend states (SPEC §8.5).
+ *
+ * Returns one entry per item needing human attention:
+ *   - Track parent in `needs-plan-review` (T14 plan-gate escalation)
+ *   - Slices in role-based bookend set: `needs-triage`, `needs-grilling`,
+ *     `ready-for-human`, `needs-acceptance`
+ *   - `review:human` slices with an open PR (S6h handoff awaiting human reviewer)
+ *
+ * Closed slices are never included.
+ */
+export function classifyNeedsYou(world: World): NeedsYouItem[] {
+  const items: NeedsYouItem[] = [];
+
+  // T14: plan-gate escalation — track parent awaiting human decision.
+  if (world.track.role === "needs-plan-review") {
+    items.push({
+      id: world.track.id,
+      title: `track #${world.track.id}`,
+      reason: "plan-gate escalation",
+    });
+  }
+
+  for (const slice of world.slices) {
+    if (slice.closed) continue;
+
+    // Role-based bookend.
+    if (HUMAN_BOOKEND_ROLES.has(slice.role)) {
+      items.push({ id: slice.id, title: slice.title, reason: slice.role });
+      continue;
+    }
+
+    // S6h: review:human slice with an open PR — awaiting human reviewer.
+    if (slice.review === "human" && slice.pr !== null && slice.pr.status === "open") {
+      items.push({ id: slice.id, title: slice.title, reason: "review:human" });
+    }
+  }
+
+  return items;
+}
 
 // ── Heartbeat schema ──────────────────────────────────────────────────────────
 
@@ -168,9 +235,7 @@ export function formatStatus(input: FormatStatusInput): string {
     lines.push("");
 
     const done = slices.filter((s) => s.closed).length;
-    const needsYou = slices.filter(
-      (s) => !s.closed && (s.role === "ready-for-human" || s.role === "needs-acceptance"),
-    ).length;
+    const needsYou = classifyNeedsYou(world).length;
     needsYouTotal += needsYou;
 
     const needsYouTag = needsYou > 0 ? `  [${needsYou} NEEDS YOU]` : "";

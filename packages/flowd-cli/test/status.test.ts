@@ -3,6 +3,8 @@ import type { Slice, World } from "@pi-flow/flow-engine";
 import {
   DEFAULT_POLL_CADENCE_MS,
   type DaemonHeartbeat,
+  HUMAN_BOOKEND_ROLES,
+  classifyNeedsYou,
   computeLiveness,
   formatStatus,
   sliceDerivedState,
@@ -390,5 +392,173 @@ describe("planInvocation — status", () => {
       kind: "status",
       config: "c.json",
     });
+  });
+});
+
+// ── classifyNeedsYou ───────────────────────────────────────────────────────────
+
+describe("classifyNeedsYou", () => {
+  test("HUMAN_BOOKEND_ROLES contains the expected role set", () => {
+    expect(HUMAN_BOOKEND_ROLES.has("needs-triage")).toBe(true);
+    expect(HUMAN_BOOKEND_ROLES.has("needs-grilling")).toBe(true);
+    expect(HUMAN_BOOKEND_ROLES.has("ready-for-human")).toBe(true);
+    expect(HUMAN_BOOKEND_ROLES.has("needs-acceptance")).toBe(true);
+    // ready-for-agent is NOT a human bookend
+    expect(HUMAN_BOOKEND_ROLES.has("ready-for-agent")).toBe(false);
+  });
+
+  test("empty world → no items", () => {
+    const world = makeWorld(1, []);
+    expect(classifyNeedsYou(world)).toEqual([]);
+  });
+
+  test("all-agent, all-closed slices → no items", () => {
+    const s = makeSlice({ id: 10, title: "Done", closed: true, role: "ready-for-human" });
+    const world = makeWorld(1, [s]);
+    expect(classifyNeedsYou(world)).toEqual([]);
+  });
+
+  test("ready-for-human slice → classified with reason 'ready-for-human'", () => {
+    const s = makeSlice({ id: 10, title: "Review it", role: "ready-for-human" });
+    const world = makeWorld(1, [s]);
+    const items = classifyNeedsYou(world);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: 10, reason: "ready-for-human" });
+  });
+
+  test("needs-acceptance slice → classified with reason 'needs-acceptance'", () => {
+    const s = makeSlice({ id: 11, title: "Accept it", role: "needs-acceptance" });
+    const world = makeWorld(1, [s]);
+    const items = classifyNeedsYou(world);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: 11, reason: "needs-acceptance" });
+  });
+
+  test("needs-grilling slice → classified with reason 'needs-grilling'", () => {
+    const s = makeSlice({ id: 12, title: "Grill this", role: "needs-grilling" });
+    const world = makeWorld(1, [s]);
+    const items = classifyNeedsYou(world);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: 12, reason: "needs-grilling" });
+  });
+
+  test("needs-triage slice → classified with reason 'needs-triage'", () => {
+    const s = makeSlice({ id: 13, title: "Triage me", role: "needs-triage" });
+    const world = makeWorld(1, [s]);
+    const items = classifyNeedsYou(world);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: 13, reason: "needs-triage" });
+  });
+
+  test("review:human slice with open PR → classified with reason 'review:human'", () => {
+    const s = makeSlice({
+      id: 14,
+      title: "Human PR review",
+      review: "human",
+      assignee: "bot",
+      pr: { number: 55, base: "track/1", status: "open", reviewAttempts: 0 },
+    });
+    const world = makeWorld(1, [s]);
+    const items = classifyNeedsYou(world);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: 14, reason: "review:human" });
+  });
+
+  test("review:human slice without open PR → not classified", () => {
+    // No PR at all — not yet at the S6h handoff point
+    const s = makeSlice({ id: 15, title: "Not yet", review: "human", assignee: "bot" });
+    const world = makeWorld(1, [s]);
+    expect(classifyNeedsYou(world)).toHaveLength(0);
+  });
+
+  test("review:human slice with approved PR → not classified (merged-path, not awaiting review)", () => {
+    const s = makeSlice({
+      id: 16,
+      title: "Already approved",
+      review: "human",
+      assignee: "bot",
+      pr: { number: 56, base: "track/1", status: "approved", reviewAttempts: 1 },
+    });
+    const world = makeWorld(1, [s]);
+    expect(classifyNeedsYou(world)).toHaveLength(0);
+  });
+
+  test("track in needs-plan-review → classified as plan-gate escalation", () => {
+    const world: World = {
+      track: { id: 5, branch: "track/5", role: "needs-plan-review" },
+      slices: [],
+    };
+    const items = classifyNeedsYou(world);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ id: 5, reason: "plan-gate escalation" });
+  });
+
+  test("track in tracking role → not classified as escalation", () => {
+    const world = makeWorld(5, []);
+    expect(classifyNeedsYou(world)).toHaveLength(0);
+  });
+
+  test("mixed fixture: returns all matching items", () => {
+    const s1 = makeSlice({ id: 10, title: "Triage", role: "needs-triage" });
+    const s2 = makeSlice({ id: 11, title: "Agent work", role: "ready-for-agent" });
+    const s3 = makeSlice({ id: 12, title: "Accept", role: "needs-acceptance" });
+    const s4 = makeSlice({ id: 13, title: "Done human", role: "ready-for-human", closed: true });
+    const s5 = makeSlice({
+      id: 14,
+      title: "Human PR",
+      review: "human",
+      assignee: "bot",
+      pr: { number: 99, base: "track/1", status: "open", reviewAttempts: 0 },
+    });
+    const world = makeWorld(1, [s1, s2, s3, s4, s5]);
+    const items = classifyNeedsYou(world);
+    // s1 (needs-triage), s3 (needs-acceptance), s5 (review:human open PR)
+    // s2 (ready-for-agent) and s4 (closed) are excluded
+    expect(items).toHaveLength(3);
+    expect(items.map((i) => i.id)).toEqual([10, 12, 14]);
+  });
+});
+
+// ── formatStatus — expanded NEEDS YOU (§8.5 bookend set) ──────────────────────
+
+describe("formatStatus — expanded NEEDS YOU classifier", () => {
+  const now = Date.now();
+
+  test("needs-triage slice is counted in NEEDS YOU", () => {
+    const s = makeSlice({ id: 10, title: "Triage me", role: "needs-triage" });
+    const world = makeWorld(1, [s]);
+    const out = formatStatus({ worlds: [world], heartbeat: null, liveness: "dead", now });
+    expect(out).toContain("NEEDS YOU: 1");
+    expect(out).toContain("[1 NEEDS YOU]");
+  });
+
+  test("needs-grilling slice is counted in NEEDS YOU", () => {
+    const s = makeSlice({ id: 10, title: "Grill me", role: "needs-grilling" });
+    const world = makeWorld(1, [s]);
+    const out = formatStatus({ worlds: [world], heartbeat: null, liveness: "dead", now });
+    expect(out).toContain("NEEDS YOU: 1");
+  });
+
+  test("review:human open-PR slice is counted in NEEDS YOU", () => {
+    const s = makeSlice({
+      id: 10,
+      title: "Human PR",
+      review: "human",
+      assignee: "bot",
+      pr: { number: 99, base: "track/1", status: "open", reviewAttempts: 0 },
+    });
+    const world = makeWorld(1, [s]);
+    const out = formatStatus({ worlds: [world], heartbeat: null, liveness: "dead", now });
+    expect(out).toContain("NEEDS YOU: 1");
+  });
+
+  test("plan-gate escalation (track needs-plan-review) is counted in NEEDS YOU", () => {
+    const world: World = {
+      track: { id: 5, branch: "track/5", role: "needs-plan-review" },
+      slices: [],
+    };
+    const out = formatStatus({ worlds: [world], heartbeat: null, liveness: "dead", now });
+    expect(out).toContain("NEEDS YOU: 1");
+    expect(out).toContain("[1 NEEDS YOU]");
   });
 });
