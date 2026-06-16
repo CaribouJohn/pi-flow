@@ -99,6 +99,8 @@ export class GitHubTrackerAdapter implements TrackerPort {
       "open",
       "--label",
       role,
+      "--limit",
+      "200",
       "--json",
       "number",
     ]);

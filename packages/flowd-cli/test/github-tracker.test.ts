@@ -278,4 +278,18 @@ describe("GitHubTrackerAdapter — listByRole", () => {
     const tracker = new GitHubTrackerAdapter({ repo: "o/r", trackBranch: "track/x", run });
     expect(await tracker.listByRole("ready-for-agent")).toEqual([]);
   });
+
+  test("passes --limit 200 so the daemon sees all tracking parents (not just the first 30)", async () => {
+    const calls: string[][] = [];
+    const run: GhRunner = async (args) => {
+      calls.push(args);
+      return JSON.stringify([]);
+    };
+    const tracker = new GitHubTrackerAdapter({ repo: "o/r", run });
+    await tracker.listByRole("tracking");
+    const listCall = calls.find((c) => c[1] === "list");
+    expect(listCall).toBeDefined();
+    expect(listCall).toContain("--limit");
+    expect(listCall).toContain("200");
+  });
 });

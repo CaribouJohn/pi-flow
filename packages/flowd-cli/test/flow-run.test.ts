@@ -106,7 +106,7 @@ describe("buildPorts", () => {
   };
 
   test("composes all four engine ports", () => {
-    const ports = buildPorts(config, makeCredentials({}), "ghp_fake_test_token");
+    const ports = buildPorts(config, makeCredentials({}), "ghp_fake_test_token", "track/5");
     expect(typeof ports.tracker.listSlices).toBe("function");
     expect(typeof ports.forge.driftRefresh).toBe("function");
     expect(typeof ports.agent.implement).toBe("function");
