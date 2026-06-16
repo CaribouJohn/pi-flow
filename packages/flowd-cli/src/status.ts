@@ -11,6 +11,7 @@
 
 import { readFile } from "node:fs/promises";
 import {
+  type PullRequest,
   type Slice,
   type World,
   isAssignable,
@@ -110,6 +111,12 @@ export interface FormatStatusInput {
   heartbeat: DaemonHeartbeat | null;
   liveness: Liveness;
   now: number;
+  /**
+   * Operational errors collected while fetching forge data (branch / PR
+   * lookups).  When non-empty, the formatter appends a warning block so the
+   * user knows the slice states shown may be incomplete.
+   */
+  lookupWarnings?: string[];
 }
 
 /**
@@ -174,6 +181,17 @@ export function formatStatus(input: FormatStatusInput): string {
 
   lines.push("");
   lines.push(`NEEDS YOU: ${needsYouTotal}`);
+
+  const warnings = input.lookupWarnings ?? [];
+  if (warnings.length > 0) {
+    lines.push("");
+    for (const w of warnings) lines.push(w);
+    lines.push("");
+    lines.push(
+      "warning: some slice data may be incomplete — fix the forge errors above and re-run",
+    );
+  }
+
   return lines.join("\n");
 }
 
@@ -282,15 +300,47 @@ export async function runStatus(
   const parents = await listTrackingParents(config.repo, ghRun);
 
   // Build a World per track by reading slices + their forge state.
+  //
+  // We intentionally do NOT use .catch(() => null) here.  Both getSliceBranch
+  // (git ls-remote) and getSlicePr (gh pr list) return null / [] naturally
+  // when the branch or PR simply does not exist — they only throw on genuine
+  // operational errors (auth failure, network error, permission denied, etc.).
+  // Silently returning null on those errors would make slices appear as
+  // "in-progress" when they may actually be "reviewed" or "in-review", with
+  // no indication that the data is incomplete.  Instead we collect per-slice
+  // warnings and surface them in the formatted output.
+  const lookupWarnings: string[] = [];
+
   const worlds: World[] = await Promise.all(
     parents.map(async (parent): Promise<World> => {
       const trackerSlices = await tracker.listSlices(parent.id);
       const slices: Slice[] = await Promise.all(
-        trackerSlices.map(async (ts) => ({
-          ...ts,
-          branch: await forge.getSliceBranch(ts.id).catch(() => null),
-          pr: await forge.getSlicePr(ts.id).catch(() => null),
-        })),
+        trackerSlices.map(async (ts) => {
+          let branch: string | null = null;
+          let pr: PullRequest | null = null;
+
+          try {
+            branch = await forge.getSliceBranch(ts.id);
+          } catch (err) {
+            lookupWarnings.push(
+              `warning: branch lookup failed for #${ts.id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+
+          try {
+            pr = await forge.getSlicePr(ts.id);
+          } catch (err) {
+            lookupWarnings.push(
+              `warning: PR lookup failed for #${ts.id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+
+          return { ...ts, branch, pr };
+        }),
       );
       return {
         track: { id: parent.id, branch: `track/${parent.id}`, role: "tracking" },
@@ -305,5 +355,5 @@ export async function runStatus(
   const now = Date.now();
   const liveness = computeLiveness(heartbeat, now, opts.pollCadenceMs);
 
-  return formatStatus({ worlds, heartbeat, liveness, now });
+  return formatStatus({ worlds, heartbeat, liveness, now, lookupWarnings });
 }

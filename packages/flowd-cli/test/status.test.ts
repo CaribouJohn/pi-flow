@@ -283,6 +283,85 @@ describe("formatStatus — multiple tracks", () => {
   });
 });
 
+// ── formatStatus — lookup warnings ──────────────────────────────────────────────
+
+describe("formatStatus — lookup warnings", () => {
+  const now = Date.now();
+
+  test("no lookupWarnings → no warning block in output", () => {
+    const s = makeSlice({ id: 10, title: "Work", role: "ready-for-agent" });
+    const world = makeWorld(1, [s]);
+    const out = formatStatus({ worlds: [world], heartbeat: null, liveness: "dead", now });
+    expect(out).not.toContain("warning:");
+  });
+
+  test("empty lookupWarnings array → no warning block in output", () => {
+    const s = makeSlice({ id: 10, title: "Work", role: "ready-for-agent" });
+    const world = makeWorld(1, [s]);
+    const out = formatStatus({
+      worlds: [world],
+      heartbeat: null,
+      liveness: "dead",
+      now,
+      lookupWarnings: [],
+    });
+    expect(out).not.toContain("warning:");
+  });
+
+  test("forge errors appear as warnings and incomplete-data notice is appended", () => {
+    const s = makeSlice({ id: 10, title: "Work", role: "ready-for-agent", assignee: "bot" });
+    const world = makeWorld(1, [s]);
+    const out = formatStatus({
+      worlds: [world],
+      heartbeat: null,
+      liveness: "dead",
+      now,
+      lookupWarnings: [
+        "warning: branch lookup failed for #10: authentication required",
+        "warning: PR lookup failed for #10: authentication required",
+      ],
+    });
+    expect(out).toContain("warning: branch lookup failed for #10: authentication required");
+    expect(out).toContain("warning: PR lookup failed for #10: authentication required");
+    expect(out).toContain("some slice data may be incomplete");
+  });
+
+  test("warnings appear after the NEEDS YOU summary line", () => {
+    const s = makeSlice({ id: 10, title: "Work", role: "ready-for-agent", assignee: "bot" });
+    const world = makeWorld(1, [s]);
+    const out = formatStatus({
+      worlds: [world],
+      heartbeat: null,
+      liveness: "dead",
+      now,
+      lookupWarnings: ["warning: branch lookup failed for #10: connection refused"],
+    });
+    const needsYouIdx = out.indexOf("NEEDS YOU:");
+    const warningIdx = out.indexOf("warning: branch lookup failed");
+    expect(needsYouIdx).toBeGreaterThan(-1);
+    expect(warningIdx).toBeGreaterThan(needsYouIdx);
+  });
+
+  test("multiple warnings from different slices are all surfaced", () => {
+    const s1 = makeSlice({ id: 10, title: "Alpha", role: "ready-for-agent", assignee: "bot" });
+    const s2 = makeSlice({ id: 11, title: "Beta", role: "ready-for-agent", assignee: "bot" });
+    const world = makeWorld(1, [s1, s2]);
+    const out = formatStatus({
+      worlds: [world],
+      heartbeat: null,
+      liveness: "dead",
+      now,
+      lookupWarnings: [
+        "warning: PR lookup failed for #10: network timeout",
+        "warning: PR lookup failed for #11: network timeout",
+      ],
+    });
+    expect(out).toContain("warning: PR lookup failed for #10: network timeout");
+    expect(out).toContain("warning: PR lookup failed for #11: network timeout");
+    expect(out).toContain("some slice data may be incomplete");
+  });
+});
+
 // ── planInvocation — status verb ───────────────────────────────────────────────
 
 describe("planInvocation — status", () => {
