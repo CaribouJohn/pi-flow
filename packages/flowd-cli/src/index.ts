@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { runCalibrate } from "./calibrate.ts";
+import { readCostRecordsFromGit, runCalibrate, runCalibrateFromRecords } from "./calibrate.ts";
 import { planInvocation } from "./cli.ts";
 import { loadConfig } from "./config.ts";
 import { acceptTrack } from "./flow-accept.ts";
@@ -19,8 +19,21 @@ const configPath = plan.config ?? process.env.FLOWD_CONFIG ?? "flowd.config.json
 if (plan.kind === "calibrate") {
   try {
     const config = await loadConfig(configPath).catch(() => undefined);
-    const historyPath = config?.costMeter?.historyPath ?? ".flowd/cost-history.jsonl";
-    await runCalibrate(historyPath, config?.costEstimator);
+    if (config?.workdir && config?.trackBranch && config?.costMeter) {
+      // Primary path: read from the committed track branch (the source of
+      // truth the meter writes to).  `workdir` is the managed clone where
+      // the meter committed the file; `origin/<trackBranch>` carries it.
+      const records = await readCostRecordsFromGit(
+        config.workdir,
+        config.trackBranch,
+        config.costMeter.historyPath,
+      );
+      runCalibrateFromRecords(records, config.costEstimator);
+    } else {
+      // Fallback: no full config — read from the local filesystem path.
+      const historyPath = config?.costMeter?.historyPath ?? ".flowd/cost-history.jsonl";
+      await runCalibrate(historyPath, config?.costEstimator);
+    }
   } catch (err) {
     console.error("flowd calibrate failed:", err instanceof Error ? err.message : String(err));
     process.exit(1);

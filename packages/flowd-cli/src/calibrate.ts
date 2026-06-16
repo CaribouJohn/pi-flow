@@ -5,10 +5,12 @@
  * observed-mean tokens/cost vs the configured estimate-table values with
  * an ↑/↓ divergence indicator.  Mutates nothing.
  */
+import { relative, resolve } from "node:path";
 import type { Effort } from "@pi-flow/flow-engine";
+import { $ } from "bun";
 import type { CostEstimatorConfig } from "./cost-estimator.ts";
 import type { CostHistoryRecord } from "./cost-meter.ts";
-import { readCostRecords } from "./cost-meter.ts";
+import { parseCostRecordsFromString, readCostRecords } from "./cost-meter.ts";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -187,7 +189,7 @@ export function formatCalibrationReport(rows: CalibrationRow[]): string {
   return lines.join("\n");
 }
 
-// ── Entry point ───────────────────────────────────────────────────────────────
+// ── Entry points ──────────────────────────────────────────────────────────────
 
 /**
  * Read the cost-history JSONL and print the calibration report to stdout.
@@ -198,6 +200,58 @@ export async function runCalibrate(
   config?: CostEstimatorConfig,
 ): Promise<void> {
   const records = await readCostRecords(historyPath);
+  const rows = buildCalibrationRows(records, config);
+  console.log(formatCalibrationReport(rows));
+}
+
+/**
+ * Read the cost-history JSONL from the committed track branch via `git show`.
+ *
+ * This is the authoritative source for `flowd calibrate` — the meter commits
+ * the file to `origin/<trackBranch>` after every slice merge, so this always
+ * returns what the meter actually wrote, regardless of which directory the
+ * operator runs `flowd calibrate` from.
+ *
+ * Returns an empty array when:
+ *  - The workdir does not exist or has no git remote.
+ *  - The file has not yet been committed to the track branch (first run).
+ *  - The fetch or `git show` command fails for any reason.
+ */
+export async function readCostRecordsFromGit(
+  workdir: string,
+  trackBranch: string,
+  historyPath: string,
+): Promise<CostHistoryRecord[]> {
+  // Fetch so we see the latest commits (committed by the meter after each merge).
+  try {
+    await $`git -C ${workdir} fetch origin`.quiet();
+  } catch {
+    // Offline, no remote, or workdir absent — fall through to empty.
+  }
+
+  // Compute the git-root-relative path (git show path must be relative to root,
+  // and must use forward slashes even on Windows).
+  const absHistoryPath = resolve(workdir, historyPath);
+  const relHistoryPath = relative(workdir, absHistoryPath).replace(/\\/g, "/");
+
+  let raw: string;
+  try {
+    raw = await $`git -C ${workdir} show origin/${trackBranch}:${relHistoryPath}`.text();
+  } catch {
+    return []; // file not yet committed to track branch
+  }
+
+  return parseCostRecordsFromString(raw);
+}
+
+/**
+ * Print the calibration report from pre-loaded records.
+ * Use when you have already fetched records (e.g. via `readCostRecordsFromGit`).
+ */
+export function runCalibrateFromRecords(
+  records: CostHistoryRecord[],
+  config?: CostEstimatorConfig,
+): void {
   const rows = buildCalibrationRows(records, config);
   console.log(formatCalibrationReport(rows));
 }
