@@ -1,4 +1,10 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "scripts/**/*.ts"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts", "scripts/**/*.ts"],
+  // The dashboard (Electrobun + React webview) needs DOM/React libs + jsx that
+  // the Bun-only base config doesn't carry; it typechecks under its OWN
+  // packages/dashboard/tsconfig.json (run as a second step in `typecheck`). Its
+  // .ts sources (Bun entry + shared RPC) import electrobun/DOM types, so exclude
+  // them here to keep the root Bun project clean.
+  "exclude": ["packages/dashboard"]
 }

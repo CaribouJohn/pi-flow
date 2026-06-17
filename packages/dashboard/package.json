@@ -1,0 +1,24 @@
+{
+  "name": "dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite build && electrobun dev",
+    "dev:debug": "bun run ../../scripts/dev-debug.ts",
+    "stop:debug": "bun run ../../scripts/stop-debug.ts",
+    "build": "bun run ../../scripts/embed-manifest.ts && vite build && electrobun build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "electrobun": "^1.18.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "vite": "^6.4.0"
+  }
+}

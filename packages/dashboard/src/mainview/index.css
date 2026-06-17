@@ -1,0 +1,45 @@
+:root {
+  --bg: #050b1f;
+  --bg-secondary: #0a1635;
+  --accent-2: #3cb8ff;
+  --text: #f3f6ff;
+  --dim: #8fa3c7;
+  font-family: system-ui, "Segoe UI", Inter, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: linear-gradient(160deg, var(--bg), var(--bg-secondary));
+  color: var(--text);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+  padding: 24px;
+}
+
+.shell h1 {
+  margin: 0;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--accent-2);
+}
+
+.shell__hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--dim);
+}
