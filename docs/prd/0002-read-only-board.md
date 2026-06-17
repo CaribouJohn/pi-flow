@@ -61,7 +61,7 @@ maintainer action), and it boards **one repo**.
 | **Q4 v1 surfaces** | Board (NEEDS YOU sub-grouped / RUNNING by track / DONE recent) · click-through to ticket · daemon liveness + controls · **slice-detail trust view** (structured inline; diff/transcript linked out). | The minimal AFK payoff plus the trust view the maintainer explicitly wanted. |
 | **Q5 Trust view depth** | Inline: reviewer verdict + findings, model, cost, duration, PR status — all cheap structured reads. **Link out** to GitHub for the diff and to the transcript artifact. | Delivers "can I trust this slice?" without building a diff viewer or transcript pipeline. Data already exists (tracker comments + `.flowd/cost-history.jsonl` + PR state). |
 | **Q6 Refresh** | **Poll** on a modest cadence (default aligned to the daemon idle poll, configurable) + immediate refresh on window-focus + manual refresh button. The heartbeat (cheap file read) refreshes the **liveness badge** faster than the full world. | Read-only-honest, rate-limit-friendly, no change-detection/subscription protocol to build. |
-| **Q7 Notifications** | **Tray badge** = NEEDS YOU count; **OS notification** fires when a poll cycle reveals a NEEDS YOU item that was absent last cycle (a set-diff on the poll). | The actual "ping me when needed" AFK payoff, cheap on top of polling. Caveat: the OS-notification path must be verified on WebView2/Electrobun (§9 "verify on WebView2, not assume Chrome"); `electrobun-skill` covers it. |
+| **Q7 Notifications** | **Tray badge** (Electrobun-native `Tray`) = NEEDS YOU count; **OS notification** fires when a poll reveals a NEEDS YOU item absent last cycle (a set-diff on the poll). OS toasts are delivered through a **native shell-integration element** (see below), *not* `Utils.showNotification`. | The "ping me when needed" AFK payoff, cheap on top of polling. **Correction (slicing):** Electrobun's built-in `Utils.showNotification` does **not** reliably deliver Windows toasts — they won't route without an **AUMID + Start Menu shortcut**, which Electrobun doesn't register. Hiss solved this with a Windows-only Rust `cdylib` (`hiss-native`) loaded via `bun:ffi` (WinRT toast + AUMID + window icon). flowd ports it as `flowd-native` (a dedicated, HITL, foundational slice). This is an **exception to Q8's scaffold-fresh** call — the native crate is copied/ported, not re-implemented. |
 | **Q8 Shell** | **Scaffold a fresh `packages/dashboard`** Electrobun app, deliberately applying the Hiss patterns: the Mainview↔Bun RPC seam (ADR-0016 + the "new RPC method" recipe), DPI-aware `bun.exe` host, CSP for the RPC socket (§9). | Minimal, no dead Hiss baggage, forces a clean engine/shell boundary. Rejected: copying the Hiss shell wholesale (imports baggage + Hiss-specific assumptions; needs the source locally). |
 | **Q9 UI verification** | The autonomous loop verifies the **headless logic** (`BoardSnapshot` builder, NEEDS YOU set-diff, supervision logic, trust-view assembly, RPC handlers) via `bun run verify`. The **pixels** are verified by a human at the acceptance bookend via `electrobun-dev` (CDP screenshots). | Matches §10 (autonomous CDP deferred) and plays to the agents' strengths; it also *forces* logic out of React into testable modules — the §2 anchor. |
 
@@ -103,18 +103,42 @@ in-situ harness is dogfooded against pi-flow's own GUI):
 - [ ] Slice-detail shows verdict/findings + model/cost/duration inline; diff/transcript links open externally.
 - [ ] `bun run verify` green (the headless logic of every slice); §9 lessons applied (no blank window / no RPC-socket mojibake); screenshots captured as evidence.
 
-## 7. Slice sketch (for `/to-issues`)
+## 7. Slices (published from this PRD — [#103](https://github.com/CaribouJohn/pi-flow/issues/103) → `/to-issues`)
 
-1. **Engine: `BoardSnapshot` builder** — extract the world-building loop from `runStatus` into a reusable, typed `BoardSnapshot` (`worlds[]` + per-world NEEDS YOU / RUNNING / DONE + liveness inputs); refactor `flowd status` to consume it (proving reuse). *(AFK; unit-tested; no pixels — the data spine.)*
-2. **Electrobun shell scaffold** — new `packages/dashboard`: DPI-aware host, CSP for the RPC socket, Mainview↔Bun RPC seam (ADR-0016), webview renders a value fetched from a Bun RPC handler. *(Candidate **HITL**: first GUI stack in-repo; "blank window = DPI-unaware" / "CSP → RPC mojibake" failures are invisible to headless verify, so the human acceptance check is load-bearing here.)*
-3. **Board render** — `BoardSnapshot` over RPC → 3-column React board (NEEDS YOU sub-grouped, RUNNING by track, DONE recent) + click-through to ticket. *(AFK; column/sub-group mapping + click-through URL building unit-tested, React thin.)*
-4. **Daemon supervision + liveness** — Bun spawns/stops/restarts the `flowd daemon` child; derives liveness from heartbeat + child exit code; React shows the badge + controls. *(AFK; supervisor state machine unit-tested.)*
-5. **Tray + notifications** — tray-resident with a NEEDS YOU badge; NEEDS YOU set-diff across polls → one OS notification per newly-arrived item. *(AFK; set-diff unit-tested; tray/notify eyeballed at acceptance — WebView2 caveat.)*
-6. **Slice-detail trust view** — assemble per-slice trust data (verdict/findings from tracker, model/cost/duration from `.flowd/cost-history.jsonl`, PR status) into a detail view-model; React renders it inline with PR/transcript links. *(AFK; assembly logic unit-tested. **Includes a slicing-time investigation**: is the reviewer verdict machine-readable, or only posted as markdown? If the latter, this slice may need a small corrective to emit a structured verdict.)*
+Ten vertical slices + the acceptance back-gate. The original sketch split into thinner,
+independently-verifiable increments, and the **`flowd-native`** slice (#207) was added once
+slicing surfaced that OS notifications require a native element (Q7 correction).
 
-**Acceptance** *(HITL, `review:human`, `Depends on:` all of the above)* — the §6 bar, driven via `electrobun-dev`.
+| # | Slice | Type | Blocked by |
+| --- | --- | --- | --- |
+| [#205] | Engine: `BoardSnapshot` builder (status + dashboard) | AFK | — |
+| [#206] | Electrobun shell scaffold (RPC seam + DPI host + CSP) | **HITL** | — |
+| [#207] | `flowd-native` shell integration (port `hiss-native`: toast + AUMID + window icon) | **HITL** | #206 |
+| [#208] | Board render (NEEDS YOU / RUNNING / DONE) + click-through | AFK | #205, #206 |
+| [#209] | Daemon liveness display (alive / stale / dead badge) | AFK | #206 |
+| [#210] | Daemon supervision controls (start / stop / restart) | AFK | #209 |
+| [#211] | Tray-resident app + NEEDS YOU count badge | AFK | #205, #206 |
+| [#212] | OS notification on newly-arrived NEEDS YOU (set-diff) | AFK | #207, #211 |
+| [#213] | Slice-detail trust view — verdict / findings + PR *(incl. verdict-machine-readability investigation)* | AFK | #205, #206 |
+| [#214] | Slice-detail trust view — model / cost / duration + transcript link | AFK | #213 |
+| [#215] | **Acceptance** — board verified in situ via `electrobun-dev` | HITL (`review:human`) | all of the above |
 
-Dependencies: S1 → S3, S6 (need the snapshot). S2 → S3, S4, S5, S6 (need the shell). S3 → S5 (board exists to badge/notify against). S4 is independent of S3 once S2 lands.
+[#205]: https://github.com/CaribouJohn/pi-flow/issues/205
+[#206]: https://github.com/CaribouJohn/pi-flow/issues/206
+[#207]: https://github.com/CaribouJohn/pi-flow/issues/207
+[#208]: https://github.com/CaribouJohn/pi-flow/issues/208
+[#209]: https://github.com/CaribouJohn/pi-flow/issues/209
+[#210]: https://github.com/CaribouJohn/pi-flow/issues/210
+[#211]: https://github.com/CaribouJohn/pi-flow/issues/211
+[#212]: https://github.com/CaribouJohn/pi-flow/issues/212
+[#213]: https://github.com/CaribouJohn/pi-flow/issues/213
+[#214]: https://github.com/CaribouJohn/pi-flow/issues/214
+[#215]: https://github.com/CaribouJohn/pi-flow/issues/215
+
+**Roots** #205 + #206 unblock everything. The two **HITL** leaves (#206 scaffold, #207
+native) are the human-bootstrap of the GUI stack; agents build the rest. So this track is
+**not fully AFK** — the human stands up the shell + native DLL (the parts invisible to a
+headless verify), then the autonomous loop takes over.
 
 ## 8. Risks / watch-items
 
