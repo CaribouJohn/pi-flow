@@ -16,9 +16,13 @@ This project **builds** the Flow Harness; it also **runs on** Flow to build itse
   tick loop: read tracker+git, derive state, run the next legal action, spawn agents.
   Holds no authoritative state of its own (state lives in the tracker + git).
 
-- **dashboard** — the human-facing *client* (an Electrobun + React webview): a view and
-  controller over the same tracker+git source. Talks to flowd over a local RPC seam.
-  Not where work happens; closing it does not stop flowd.
+- **dashboard** — the human-facing *client* (an Electrobun + React webview): a view over
+  the same tracker+git source. It reuses the engine's derivation rather than re-deriving
+  state. In its v1 shape (PRD-0002 / ADR-0039) the dashboard's Bun process is a
+  **supervisor + viewer**: it supervises a `flowd daemon` child and reads the world via
+  `flow-engine` directly; the only RPC seam is Mainview↔Bun (webview ↔ its own host), not a
+  flowd↔dashboard seam. **Closing the window** (→ tray) doesn't stop flowd; **quitting the
+  app** stops the app-supervised daemon (which still runs standalone from a terminal).
 
 - **the `/flow` skill** — the *existing Claude Code skill* (`.claude/skills/flow/`) that
   drives Flow conversationally today. Distinct from **flowd** (the future automated
