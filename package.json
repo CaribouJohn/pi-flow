@@ -7,7 +7,7 @@
   "scripts": {
     "lint": "biome check packages scripts",
     "format": "biome check --write packages scripts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/dashboard/tsconfig.json",
     "test": "bun test packages",
     "verify": "bun run lint && bun run typecheck && bun run test",
     "flowd": "bun packages/flowd-cli/src/index.ts"
@@ -15,6 +15,7 @@
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@types/bun": "^1.1.14",
+    "rcedit": "5.0.2",
     "typescript": "^5.7.2"
   }
 }

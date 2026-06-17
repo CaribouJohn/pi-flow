@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Content-Security-Policy — defence-in-depth for the Mainview webview.
+
+      CRITICAL (mirrors Hiss, see its index.html + ADR / §9): the connect-src
+      directive MUST permit Electrobun's local RPC WebSocket
+      (ws://localhost:<dynamic-port> / ws://127.0.0.1:*). Blocking it forces
+      Electrobun's native fallback transport, which sign-extends multi-byte UTF-8
+      (every non-ASCII byte b → U+FF00|b), so any non-ASCII text arrives as
+      mojibake in the Mainview. The socket is AES-GCM encrypted per webview, so
+      plaintext ws to loopback is safe. The connect-src below is copied from Hiss
+      verbatim (https:/wss: kept for parity; the loopback ws rules are the
+      load-bearing part for the RPC seam).
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; connect-src 'self' https: wss: ws://localhost:* ws://127.0.0.1:*; media-src 'self' data: https: blob:; object-src 'none'; base-uri 'self'; form-action 'self';"
+    />
+    <title>flowd dashboard</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./index.tsx"></script>
+  </body>
+</html>
