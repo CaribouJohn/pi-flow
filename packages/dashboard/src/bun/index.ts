@@ -119,7 +119,15 @@ const rpc = BrowserView.defineRPC<DashboardRPC>({
       },
 
       // External click-through: open the ticket URL in the OS browser.
+      // Defense-in-depth: the webview only ever sends ticketUrl(repo, id) =
+      // https://github.com/<repo>/issues/<n> (repo from trusted config, id a
+      // number), but the Bun handler must not trust the webview blindly — it
+      // feeds the OS `start`/`open` shell. Reject anything that isn't a GitHub
+      // https URL before it reaches that shell.
       openTicket: ({ url }) => {
+        if (!/^https:\/\/github\.com\//.test(url)) {
+          throw new Error(`openTicket: refusing to open non-GitHub URL: ${url}`);
+        }
         openInBrowser(url);
         return undefined;
       },
