@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { $ } from "bun";
 import { FORGE_CREDENTIAL_KEY, FileCredentialStore } from "../src/credentials.ts";
 import { makeForgeGhRunner, makeForgeRunner, readForgeToken } from "../src/forge-auth.ts";
 import { makeCredentials } from "./helpers.ts";
@@ -113,6 +114,31 @@ describe("makeForgeRunner", () => {
         process.env.GH_TOKEN = prev;
       }
     }
+  });
+
+  test("injects http.extraheader into git commands so push authenticates as flow-bot (ADR-0038)", async () => {
+    // Prove the -c http.extraheader=AUTHORIZATION: basic <base64> flag is
+    // injected before git subcommands.  `git config http.extraheader` reads
+    // the effective config including -c overrides; it outputs the injected
+    // value only if the flag was actually prepended by the runner.
+    // Scheme MUST be basic (base64 of x-access-token:<pat>) — a classic PAT is
+    // rejected by GitHub git-over-HTTPS under `bearer` (verified live).
+    const tempDir = await mkdtemp(join(tmpdir(), "pf-forge-git-"));
+    dirs.push(tempDir);
+    await $`git init ${tempDir}`.quiet();
+    const runner = makeForgeRunner("ghp_token_transport_test");
+    const out = await runner("git", ["-C", tempDir, "config", "http.extraheader"]);
+    const expectedBasic = Buffer.from("x-access-token:ghp_token_transport_test").toString("base64");
+    expect(out.trim()).toBe(`AUTHORIZATION: basic ${expectedBasic}`);
+  });
+
+  test("does NOT inject http.extraheader for non-git commands (gh passthrough unchanged)", async () => {
+    // Regression guard: the extraheader injection is git-only.  A `gh` command
+    // must not have spurious -c args inserted before its subcommand.
+    const runner = makeForgeRunner("ghp_any");
+    // `sh -c 'printf "%s" "$1"' sh hello` echoes `hello` — no injected -c args.
+    const out = await runner("sh", ["-c", 'printf "%s" "$1"', "sh", "hello"]);
+    expect(out.trim()).toBe("hello");
   });
 });
 
