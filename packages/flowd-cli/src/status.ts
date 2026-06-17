@@ -202,15 +202,19 @@ export interface StatusConfig {
 }
 
 /**
- * Recompute the world (all tracking parents + slice states) from tracker + git,
- * read the daemon heartbeat for liveness, and return a formatted status report.
+ * Fetch the live board snapshot: discover all tracking parents from the tracker,
+ * build a {@link World} per track (per-slice branch/PR via the forge adapter),
+ * read the daemon heartbeat for liveness, and assemble a {@link BoardSnapshot}.
  *
- * Works without a running daemon — heartbeat absent → liveness `dead`.
+ * This is the reusable I/O layer shared by `flowd status` (which formats the
+ * snapshot as text) and the dashboard (which renders it). Pure-data out — no
+ * formatting. Works without a running daemon — heartbeat absent → liveness
+ * `dead`.
  */
-export async function runStatus(
+export async function fetchBoardSnapshot(
   config: StatusConfig,
   opts: { heartbeatPath?: string; pollCadenceMs?: number } = {},
-): Promise<string> {
+): Promise<BoardSnapshot> {
   const credentials = new FileCredentialStore(config.credentialsPath);
   const forgeToken = await readForgeToken(credentials);
   const ghRun = makeForgeGhRunner(forgeToken);
@@ -289,9 +293,9 @@ export async function runStatus(
   const now = Date.now();
   const liveness = computeLiveness(heartbeat, now, opts.pollCadenceMs);
 
-  // Assemble the shared snapshot, then format it (the dashboard builds the same
-  // snapshot and renders it instead of formatting — one source of truth).
-  const snapshot = buildBoardSnapshot({
+  // Assemble the shared snapshot. The dashboard renders this snapshot directly;
+  // `runStatus` formats it as text — one source of truth.
+  return buildBoardSnapshot({
     worlds,
     heartbeat,
     liveness,
@@ -299,5 +303,19 @@ export async function runStatus(
     repo: config.repo,
     lookupWarnings,
   });
+}
+
+/**
+ * Recompute the world (all tracking parents + slice states) from tracker + git,
+ * read the daemon heartbeat for liveness, and return a formatted status report.
+ *
+ * Thin wrapper over {@link fetchBoardSnapshot} + {@link formatStatus}.
+ * Works without a running daemon — heartbeat absent → liveness `dead`.
+ */
+export async function runStatus(
+  config: StatusConfig,
+  opts: { heartbeatPath?: string; pollCadenceMs?: number } = {},
+): Promise<string> {
+  const snapshot = await fetchBoardSnapshot(config, opts);
   return formatStatus(snapshot);
 }
