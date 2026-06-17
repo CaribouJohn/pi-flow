@@ -117,16 +117,19 @@ describe("makeForgeRunner", () => {
   });
 
   test("injects http.extraheader into git commands so push authenticates as flow-bot (ADR-0038)", async () => {
-    // Prove the -c http.extraheader=AUTHORIZATION: bearer <token> flag is
+    // Prove the -c http.extraheader=AUTHORIZATION: basic <base64> flag is
     // injected before git subcommands.  `git config http.extraheader` reads
     // the effective config including -c overrides; it outputs the injected
     // value only if the flag was actually prepended by the runner.
+    // Scheme MUST be basic (base64 of x-access-token:<pat>) — a classic PAT is
+    // rejected by GitHub git-over-HTTPS under `bearer` (verified live).
     const tempDir = await mkdtemp(join(tmpdir(), "pf-forge-git-"));
     dirs.push(tempDir);
     await $`git init ${tempDir}`.quiet();
     const runner = makeForgeRunner("ghp_token_transport_test");
     const out = await runner("git", ["-C", tempDir, "config", "http.extraheader"]);
-    expect(out.trim()).toBe("AUTHORIZATION: bearer ghp_token_transport_test");
+    const expectedBasic = Buffer.from("x-access-token:ghp_token_transport_test").toString("base64");
+    expect(out.trim()).toBe(`AUTHORIZATION: basic ${expectedBasic}`);
   });
 
   test("does NOT inject http.extraheader for non-git commands (gh passthrough unchanged)", async () => {
