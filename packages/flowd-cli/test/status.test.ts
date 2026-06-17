@@ -4,11 +4,19 @@ import {
   DEFAULT_POLL_CADENCE_MS,
   type DaemonHeartbeat,
   HUMAN_BOOKEND_ROLES,
+  buildBoardSnapshot,
   classifyNeedsYou,
   computeLiveness,
-  formatStatus,
+  formatStatus as renderSnapshot,
   sliceDerivedState,
 } from "../src/status.ts";
+
+// `formatStatus` now consumes a BoardSnapshot. These tests were written against
+// the legacy `{worlds, heartbeat, liveness, now, lookupWarnings}` fixture shape,
+// which is exactly `buildBoardSnapshot`'s input — so wrap it to exercise the
+// build→format path `runStatus` uses, with no call-site churn.
+const formatStatus = (input: Parameters<typeof buildBoardSnapshot>[0]): string =>
+  renderSnapshot(buildBoardSnapshot(input));
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 

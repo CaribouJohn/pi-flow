@@ -1,8 +1,11 @@
 /**
  * `flowd status` — read-only summary of all tracking parents + daemon liveness.
  *
- * Pure functions (`computeLiveness`, `formatStatus`, `sliceDerivedState`) are
- * fully unit-testable without I/O; `runStatus` wires them to real adapters.
+ * This module is the **upper layer**: the human-readable text formatter
+ * (`formatStatus`, pure) and the `runStatus` I/O that fetches the worlds and
+ * builds a {@link BoardSnapshot}. The snapshot model + classification + liveness
+ * live in `board-snapshot.ts` (the lower layer, shared with the dashboard) and
+ * are re-exported here for back-compat.
  *
  * Heartbeat path: `.flowd/daemon-heartbeat.json` — operator-local and gitignored
  * (`.flowd/` is already in `.gitignore`).  The daemon slice writes this file once
@@ -10,192 +13,44 @@
  */
 
 import { readFile } from "node:fs/promises";
+import type { PullRequest, Slice, World } from "@pi-flow/flow-engine";
 import {
-  type PullRequest,
-  type Role,
-  type Slice,
-  type World,
-  isAssignable,
-  isBlocked,
-  isImplemented,
-  isInProgress,
-  isReviewed,
-} from "@pi-flow/flow-engine";
+  type BoardSnapshot,
+  type DaemonHeartbeat,
+  HEARTBEAT_PATH,
+  buildBoardSnapshot,
+  computeLiveness,
+  sliceDerivedState,
+} from "./board-snapshot.ts";
 import { FileCredentialStore } from "./credentials.ts";
 import { makeForgeGhRunner, makeForgeRunner, readForgeToken } from "./forge-auth.ts";
 import { GitForgeAdapter } from "./git-forge.ts";
 import { type GhRunner, GitHubTrackerAdapter } from "./github-tracker.ts";
 
-// ── §8.5 Human-bookend classifier ────────────────────────────────────────────
-
-/**
- * Role-based human-bookend set (SPEC §8.5).
- * Slices in any of these roles require human action before the agent can
- * proceed.  `review:human` and plan-gate escalation (T14) are derived
- * conditions checked separately in `classifyNeedsYou`.
- */
-export const HUMAN_BOOKEND_ROLES = new Set<Role>([
-  "needs-triage",
-  "needs-grilling",
-  "ready-for-human",
-  "needs-acceptance",
-]);
-
-/** A single item surfaced by the NEEDS YOU classifier. */
-export interface NeedsYouItem {
-  /** Issue number (track parent or slice). */
-  id: number;
-  /** Issue title or display label. */
-  title: string;
-  /** Short human-readable reason (the role or derived condition). */
-  reason: string;
-}
-
-/**
- * Classify all items in a World that are in human-bookend states (SPEC §8.5).
- *
- * Returns one entry per item needing human attention:
- *   - Track parent in `needs-plan-review` (T14 plan-gate escalation)
- *   - Slices in role-based bookend set: `needs-triage`, `needs-grilling`,
- *     `ready-for-human`, `needs-acceptance`
- *   - `review:human` slices with an open PR (S6h handoff awaiting human reviewer)
- *
- * Closed slices are never included.
- */
-export function classifyNeedsYou(world: World): NeedsYouItem[] {
-  const items: NeedsYouItem[] = [];
-
-  // T14: plan-gate escalation — track parent awaiting human decision.
-  if (world.track.role === "needs-plan-review") {
-    items.push({
-      id: world.track.id,
-      title: `track #${world.track.id}`,
-      reason: "plan-gate escalation",
-    });
-  }
-
-  for (const slice of world.slices) {
-    if (slice.closed) continue;
-
-    // Role-based bookend.
-    if (HUMAN_BOOKEND_ROLES.has(slice.role)) {
-      items.push({ id: slice.id, title: slice.title, reason: slice.role });
-      continue;
-    }
-
-    // S6h: review:human slice with an open PR — awaiting human reviewer.
-    if (slice.review === "human" && slice.pr !== null && slice.pr.status === "open") {
-      items.push({ id: slice.id, title: slice.title, reason: "review:human" });
-    }
-  }
-
-  return items;
-}
-
-// ── Heartbeat schema ──────────────────────────────────────────────────────────
-
-/**
- * Contract the daemon slice writes once per tick.
- * Stored at `.flowd/daemon-heartbeat.json` (operator-local, gitignored).
- */
-export interface DaemonHeartbeat {
-  /** ISO-8601 timestamp of the last completed tick. */
-  lastTickAt: string;
-  /** Human-readable description of what the daemon last did. */
-  activity: string;
-  /** Running count of consecutive tick errors (reset on success). */
-  consecutiveErrors: number;
-  /** OS PID of the daemon process. */
-  pid: number;
-  /**
-   * Daemon health status (PRD-0005 §4.1).
-   * - `ok`       — last tick succeeded, backoff reset.
-   * - `degraded` — last tick threw a transient error; backing off + retrying.
-   * - `halted`   — last tick threw a fatal error; process is exiting non-zero.
-   * Absent in heartbeats written before this field was added.
-   */
-  status?: "ok" | "degraded" | "halted";
-}
-
-/** Daemon liveness classification derived from heartbeat age. */
-export type Liveness = "alive" | "stale" | "dead";
-
-/** Default poll cadence (ms) — daemon writes the heartbeat once per tick. */
-export const DEFAULT_POLL_CADENCE_MS = 60_000;
-
-/** Operator-local heartbeat path (gitignored via `.flowd/`). */
-export const HEARTBEAT_PATH = ".flowd/daemon-heartbeat.json";
-
-// ── Pure: liveness ────────────────────────────────────────────────────────────
-
-/**
- * Classify daemon liveness from the heartbeat age relative to the poll cadence.
- *
- * - `alive`:  age ≤ 2 × cadence  (daemon is running normally)
- * - `stale`:  age ≤ 10 × cadence (daemon may be stuck or restarting)
- * - `dead`:   age > 10 × cadence, or no heartbeat file
- */
-export function computeLiveness(
-  heartbeat: DaemonHeartbeat | null,
-  now: number,
-  pollCadenceMs: number = DEFAULT_POLL_CADENCE_MS,
-): Liveness {
-  if (heartbeat === null) return "dead";
-  const age = now - new Date(heartbeat.lastTickAt).getTime();
-  if (age <= 2 * pollCadenceMs) return "alive";
-  if (age <= 10 * pollCadenceMs) return "stale";
-  return "dead";
-}
-
-// ── Pure: slice display state ─────────────────────────────────────────────────
-
-/**
- * Derive a human-readable state label for a slice using the engine's derive
- * functions (SPEC §4, invariant #5 — never stored, always recomputed).
- *
- * Priority order (highest wins):
- *   closed              → done
- *   ready-for-human |
- *   needs-acceptance    → needs-you
- *   in-progress +
- *     reviewed PR       → reviewed
- *   in-progress + PR    → in-review
- *   in-progress         → in-progress
- *   blocked             → blocked
- *   assignable          → ready
- *   otherwise           → the role label
- */
-export function sliceDerivedState(slice: Slice, world: World): string {
-  if (slice.closed) return "done";
-  if (slice.role === "ready-for-human" || slice.role === "needs-acceptance") return "needs-you";
-  if (isInProgress(slice)) {
-    if (isReviewed(slice)) return "reviewed";
-    if (isImplemented(slice)) return "in-review";
-    return "in-progress";
-  }
-  if (isBlocked(slice, world)) return "blocked";
-  if (isAssignable(slice, world)) return "ready";
-  return slice.role;
-}
+// Re-export the lower-layer surface so existing importers (daemon.ts, tests)
+// keep working unchanged, and the dashboard can pull the snapshot model from
+// either entry point.
+export {
+  HUMAN_BOOKEND_ROLES,
+  classifyNeedsYou,
+  computeLiveness,
+  sliceDerivedState,
+  buildBoardSnapshot,
+  DEFAULT_POLL_CADENCE_MS,
+  HEARTBEAT_PATH,
+} from "./board-snapshot.ts";
+export type {
+  NeedsYouItem,
+  DaemonHeartbeat,
+  Liveness,
+  BoardWorld,
+  BoardSnapshot,
+} from "./board-snapshot.ts";
 
 // ── Pure: formatter ───────────────────────────────────────────────────────────
 
-/** Inputs to the pure status formatter. */
-export interface FormatStatusInput {
-  worlds: World[];
-  heartbeat: DaemonHeartbeat | null;
-  liveness: Liveness;
-  now: number;
-  /**
-   * Operational errors collected while fetching forge data (branch / PR
-   * lookups).  When non-empty, the formatter appends a warning block so the
-   * user knows the slice states shown may be incomplete.
-   */
-  lookupWarnings?: string[];
-}
-
 /**
- * Format a human-readable status report from pre-computed world snapshots.
+ * Format a human-readable status report from a {@link BoardSnapshot}.
  * Pure — no I/O; safe to call in tests with fixture data.
  *
  * Output shape:
@@ -208,9 +63,9 @@ export interface FormatStatusInput {
  *
  *   NEEDS YOU: 1
  */
-export function formatStatus(input: FormatStatusInput): string {
+export function formatStatus(snapshot: BoardSnapshot): string {
   const lines: string[] = [];
-  const { liveness, heartbeat, now, worlds } = input;
+  const { liveness, heartbeat, generatedAt: now, worlds } = snapshot;
 
   // Daemon liveness line
   if (liveness === "alive" && heartbeat !== null) {
@@ -239,18 +94,19 @@ export function formatStatus(input: FormatStatusInput): string {
   let needsYouTotal = 0;
 
   for (const world of worlds) {
-    const { track, slices } = world;
     lines.push("");
 
-    const done = slices.filter((s) => s.closed).length;
-    const needsYou = classifyNeedsYou(world).length;
+    const done = world.done.length;
+    const needsYou = world.needsYou.length;
     needsYouTotal += needsYou;
 
     const needsYouTag = needsYou > 0 ? `  [${needsYou} NEEDS YOU]` : "";
-    lines.push(`track #${track.id}  ${done}/${slices.length} done${needsYouTag}`);
+    lines.push(`track #${world.track.id}  ${done}/${world.slices.length} done${needsYouTag}`);
 
-    for (const slice of slices) {
-      const state = sliceDerivedState(slice, world);
+    // sliceDerivedState needs a World; reconstruct it from the board world.
+    const asWorld: World = { track: world.track, slices: world.slices };
+    for (const slice of world.slices) {
+      const state = sliceDerivedState(slice, asWorld);
       lines.push(`  #${slice.id}  ${slice.title}  [${state}]`);
     }
   }
@@ -258,7 +114,7 @@ export function formatStatus(input: FormatStatusInput): string {
   lines.push("");
   lines.push(`NEEDS YOU: ${needsYouTotal}`);
 
-  const warnings = input.lookupWarnings ?? [];
+  const warnings = snapshot.lookupWarnings ?? [];
   if (warnings.length > 0) {
     lines.push("");
     for (const w of warnings) lines.push(w);
@@ -433,5 +289,15 @@ export async function runStatus(
   const now = Date.now();
   const liveness = computeLiveness(heartbeat, now, opts.pollCadenceMs);
 
-  return formatStatus({ worlds, heartbeat, liveness, now, lookupWarnings });
+  // Assemble the shared snapshot, then format it (the dashboard builds the same
+  // snapshot and renders it instead of formatting — one source of truth).
+  const snapshot = buildBoardSnapshot({
+    worlds,
+    heartbeat,
+    liveness,
+    now,
+    repo: config.repo,
+    lookupWarnings,
+  });
+  return formatStatus(snapshot);
 }
