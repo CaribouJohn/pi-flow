@@ -6,6 +6,11 @@
   "bin": {
     "flowd": "src/index.ts"
   },
+  "exports": {
+    ".": "./src/status.ts",
+    "./board-snapshot": "./src/board-snapshot.ts",
+    "./config": "./src/config.ts"
+  },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.3",
     "@pi-flow/flow-engine": "workspace:*",

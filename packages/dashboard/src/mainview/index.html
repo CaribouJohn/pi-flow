@@ -6,19 +6,25 @@
     <!--
       Content-Security-Policy — defence-in-depth for the Mainview webview.
 
-      CRITICAL (mirrors Hiss, see its index.html + ADR / §9): the connect-src
-      directive MUST permit Electrobun's local RPC WebSocket
-      (ws://localhost:<dynamic-port> / ws://127.0.0.1:*). Blocking it forces
-      Electrobun's native fallback transport, which sign-extends multi-byte UTF-8
-      (every non-ASCII byte b → U+FF00|b), so any non-ASCII text arrives as
-      mojibake in the Mainview. The socket is AES-GCM encrypted per webview, so
-      plaintext ws to loopback is safe. The connect-src below is copied from Hiss
-      verbatim (https:/wss: kept for parity; the loopback ws rules are the
-      load-bearing part for the RPC seam).
+      CRITICAL: the connect-src directive MUST permit Electrobun's local RPC
+      WebSocket (ws://localhost:<dynamic-port> / ws://127.0.0.1:*). Blocking it
+      forces Electrobun's native fallback transport, which sign-extends
+      multi-byte UTF-8 (every non-ASCII byte b → U+FF00|b), so any non-ASCII text
+      arrives as mojibake in the Mainview. The socket is AES-GCM encrypted per
+      webview, so plaintext ws to loopback is safe.
+
+      TIGHTENED (#208, the #206 review follow-up): the data plane is now known —
+      the webview talks ONLY to the loopback RPC socket, and GitHub is opened in
+      the OS browser via the `openTicket` RPC (never fetched/navigated by the
+      webview). So the Hiss-parity `https:`/`wss:` (connect-src) and
+      `https:`/`blob:` (img-src/media-src) allowances are removed; this board
+      fetches nothing over the network and loads no remote images or media. What
+      remains is exactly what Electrobun's RPC socket + React/vite need: the
+      loopback `ws://` connect-src and `style-src 'unsafe-inline'`.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; connect-src 'self' https: wss: ws://localhost:* ws://127.0.0.1:*; media-src 'self' data: https: blob:; object-src 'none'; base-uri 'self'; form-action 'self';"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; media-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self';"
     />
     <title>flowd dashboard</title>
   </head>
